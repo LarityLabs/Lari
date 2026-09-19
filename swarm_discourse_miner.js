@@ -188,8 +188,9 @@ function promptOverlap(aText, bText) {
 // ---------------------------------------------------------------------------
 
 function minerState(model) {
+  if (!model || typeof model !== 'object') model = {};
   model.lariDiscourseMiner = model.lariDiscourseMiner || {
-    version: 1,
+    version: 2,
     lastTurn: null,          // { userMessage, lariAnswer, confidence, intent, at }
     turnLog: [],             // bounded 200, audit only
     pendingRecovery: null,   // { failedTurn, correctionText, at }
@@ -201,7 +202,24 @@ function minerState(model) {
     successOperators: [],    // induced stimulus->response operators from repeated successes, bounded 40
     discardedRecoveries: 0   // pending recoveries dropped: new question, not a retry
   };
-  return model.lariDiscourseMiner;
+  const s = model.lariDiscourseMiner;
+  // Legacy migration (round-2 fix, 2026-09-19): successOperators and
+  // successExemplars were added after some models had already persisted a
+  // miner state. A legacy-shaped state reached noteTurn missing those keys,
+  // and the report literal read .length on undefined BEFORE noteTurn's try —
+  // every turn crashed and the hook's silent catch swallowed it (turns logged
+  // 0 pairs, 0 inductions on the live model). Backfill defaults on first
+  // touch so legacy state migrates cleanly without losing history.
+  if (!Array.isArray(s.successOperators)) s.successOperators = [];
+  if (!s.successExemplars || typeof s.successExemplars !== 'object' || Array.isArray(s.successExemplars)) s.successExemplars = {};
+  if (!Array.isArray(s.pairs)) s.pairs = [];
+  if (!Array.isArray(s.turnLog)) s.turnLog = [];
+  if (!Array.isArray(s.inductions)) s.inductions = [];
+  if (!s.clusters || typeof s.clusters !== 'object' || Array.isArray(s.clusters)) s.clusters = {};
+  if (!s.calibration || typeof s.calibration !== 'object' || Array.isArray(s.calibration)) s.calibration = {};
+  if (typeof s.discardedRecoveries !== 'number') s.discardedRecoveries = 0;
+  if (s.version !== 2) s.version = 2;
+  return s;
 }
 
 function recordCalibration(state, intent, corrected) {
@@ -386,15 +404,22 @@ function recordSuccessExemplar(state, userMessage, lariAnswer, signal, prevTurn)
 // ---------------------------------------------------------------------------
 
 function noteTurn(model, turn = {}, bindings = {}) {
-  const state = minerState(model);
-  const userMessage = String(turn.userMessage || '').trim();
-  const lariAnswer = String(turn.lariAnswer || '').trim();
-  const intent = String(turn.intent || bindings.classifyIntent?.(userMessage) || 'unknown');
-  const confidence = typeof turn.confidence === 'number' ? turn.confidence : null;
-  const userScope = String(turn.userScope || 'default');
-  const report = { signal: 'neutral', cues: [], induced: null, successInduced: null, successOperators: state.successOperators.length, pairCount: state.pairs.length, confidenceCalibrated: null };
+  // Default report first: the try/catch placement here is load-bearing. The
+  // report literal used to read state.successOperators.length BEFORE the try
+  // (and minerState had no legacy migration), so a legacy-shaped state
+  // crashed every turn with the hook's silent catch as the only safety net.
+  // Now nothing outside the try can throw into the caller.
+  const report = { signal: 'neutral', cues: [], induced: null, successInduced: null, successOperators: 0, pairCount: 0, confidenceCalibrated: null };
 
   try {
+    const state = minerState(model);
+    const userMessage = String(turn.userMessage || '').trim();
+    const lariAnswer = String(turn.lariAnswer || '').trim();
+    const intent = String(turn.intent || bindings.classifyIntent?.(userMessage) || 'unknown');
+    const confidence = typeof turn.confidence === 'number' ? turn.confidence : null;
+    const userScope = String(turn.userScope || 'default');
+    report.successOperators = (state.successOperators || []).length;
+    report.pairCount = (state.pairs || []).length;
     const detected = detectSignal(userMessage, state.lastTurn);
     const prevTurn = state.lastTurn;
     report.signal = detected.signal;
@@ -513,7 +538,7 @@ function noteTurn(model, turn = {}, bindings = {}) {
         confidence: successInduced.confidence
       };
     }
-    report.successOperators = state.successOperators.length;
+    report.successOperators = (state.successOperators || []).length;
 
     // 6. Roll the turn log.
     state.turnLog.push({

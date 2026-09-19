@@ -104,7 +104,9 @@ async function main() {
       runtime.classifyChatIntent(phrase) === 'small_talk');
   }
   // Content questions stay out: "are you a he" scores 0.4 against the
-  // "you are welcome" prototype, below the 0.5 threshold.
+  // "you are welcome" prototype, below the 0.5 threshold. These two are the
+  // round-3 protection gates: the new farewell/acknowledgment/filler
+  // prototypes must not pull them into small_talk either.
   check('fuzzy: "are you a he" stays open_chat (below threshold)',
     runtime.classifyChatIntent('are you a he') === 'open_chat');
   check('fuzzy: "what are you working on" stays open_chat',
@@ -115,6 +117,30 @@ async function main() {
   for (const phrase of FUZZY_PHRASES) {
     const a = await ask(fuzzyModel, phrase);
     check(`fuzzy answer: "${phrase}" is natural small talk, never the dodge`,
+      a.length > 2 && !CANNED.test(a) && !DODGE.test(a), a.slice(0, 70));
+  }
+
+  // --- fuzzy phatic layer round 3 (2026-09-19): 12 more tutoring-session
+  // misses, covered by new prototypes plus the repeated-letter squish in
+  // fuzzyNormalizeChatText ("byeee" -> "bye", "laterrrs" -> "laters").
+  const FUZZY_ROUND3_PHRASES = ['laters', 'cya', 'byeee', 'ok im out', 'done',
+    'see you tomorrow', 'same here man', 'perfect', 'just hanging', 'back',
+    'wait one sec', 'no promises'];
+  for (const phrase of FUZZY_ROUND3_PHRASES) {
+    check(`fuzzy r3 classify: "${phrase}" -> small_talk`,
+      runtime.classifyChatIntent(phrase) === 'small_talk');
+  }
+  // Protection: the two content questions must still not match, even with
+  // the new prototypes in the set.
+  check('fuzzy r3: "are you a he" still stays open_chat',
+    runtime.classifyChatIntent('are you a he') === 'open_chat');
+  check('fuzzy r3: "what are you working on" still stays open_chat',
+    runtime.classifyChatIntent('what are you working on') === 'open_chat');
+
+  const fuzzyR3Model = {};
+  for (const phrase of FUZZY_ROUND3_PHRASES) {
+    const a = await ask(fuzzyR3Model, phrase);
+    check(`fuzzy r3 answer: "${phrase}" is natural small talk, never the dodge`,
       a.length > 2 && !CANNED.test(a) && !DODGE.test(a), a.slice(0, 70));
   }
 

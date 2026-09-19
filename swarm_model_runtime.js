@@ -147,6 +147,27 @@ function attachSwarmModelRuntime(globalScope) {
       .map(token => token.replace(/s$/, ''));
   }
 
+  // Doubled-final-consonant collapse for token comparison ("debugging" /
+  // "debugg" vs "debug"). lexicalRoot stems "debugging" to "debugg" while
+  // "debug" stays "debug"; without this, ordinary inflection reads as a
+  // different word in the chat relevance bar and in subject agreement.
+  function undoubledRoot(root) {
+    const match = /^(.+)([^aeiou])\2$/.exec(String(root || ''));
+    return match ? match[1] + match[2] : root;
+  }
+
+  // Stem a subject term for agreement comparison: strip common inflectional
+  // suffixes, then collapse a doubled final consonant ("debugging" ->
+  // "debugg" -> "debug"). Mirrors the chat lane's lexicalRoot so a record
+  // topic and a user message using different inflections still agree.
+  function stemSubjectTerm(term) {
+    let value = String(term || '');
+    if (value.length > 5 && value.endsWith('ueing')) value = value.slice(0, -3);
+    else if (value.length > 5 && value.endsWith('ing')) value = value.slice(0, -3);
+    else if (value.length > 4 && value.endsWith('ed')) value = value.slice(0, -2);
+    return undoubledRoot(value);
+  }
+
   // Subject agreement for retained factual knowledge. A record about subject S
   // ("Capital of West Germany") must only answer a question about S. Token
   // overlap is not agreement: one-directional coverage lets a more specific
@@ -181,8 +202,22 @@ function attachSwarmModelRuntime(globalScope) {
       return recordSig === messageSig;
     }
     const recordTerms = recordSig.split(' ');
-    const messageTerms = new Set(messageSig.split(' '));
-    return recordTerms.every(term => messageTerms.has(term));
+    const messageTerms = messageSig.split(' ');
+    // Inflection-tolerant term equality: "debugging" (record) vs "debug"
+    // (message) must agree as the same subject. Compare stemmed forms.
+    const termsAgree = (recordTerm, messageTerm) =>
+      recordTerm === messageTerm || stemSubjectTerm(recordTerm) === stemSubjectTerm(messageTerm);
+    return recordTerms.every(recordTerm => messageTerms.some(messageTerm => termsAgree(recordTerm, messageTerm)));
+  }
+
+  // Internal benchmark/eval/arena records must never be served as chat
+  // answers (fix-round 3, bug 2). Markers cover the real leaked record
+  // families (h2h.* ids, benchmark names, arena/fixture language) plus the
+  // outdated "public model API" fallback note — production uses zero external
+  // model calls, so that text must not be reachable from chat.
+  const INTERNAL_EVAL_RECORD_TEXT = /\bh2h[\._]|polyglot_plan|GSM8K|public model API|benchmark|arena|baseline fixture|self[- ]test|eval(?:uation)?\s+record/i;
+  function isInternalEvalRecordText(value) {
+    return INTERNAL_EVAL_RECORD_TEXT.test(String(value || ''));
   }
 
   function ensureSemanticMemory(model) {
@@ -4223,7 +4258,11 @@ function attachSwarmModelRuntime(globalScope) {
       text = text.split(` ${from} `).join(` ${to} `)
         .split(` ${from}' `).join(` ${to} `);
     }
-    return text.replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+    // Squish runs of 3+ repeated letters ("byeee" -> "bye", "laterrrs" ->
+    // "laters") so elongated casual spellings match their base prototype.
+    // Legit doubles ("good", "see", "chillin") are untouched.
+    return text.replace(/(.)\1{2,}/g, '$1')
+      .replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
   }
 
   // Phatic prototypes, grouped by the 5 small-talk categories. Each entry is
@@ -4233,12 +4272,17 @@ function attachSwarmModelRuntime(globalScope) {
     ['greeting', ['hey']], ['greeting', ['yo']], ['greeting', ['hi']],
     ['greeting', ['hello']], ['greeting', ['sup']], ['greeting', ['howdy']],
     ['greeting', ['hey', 'again']], ['greeting', ['i', 'am', 'back']],
+    ['greeting', ['back']],
     ['greeting', ['you', 'are', 'welcome']],
     ['farewell', ['bye']], ['farewell', ['later']], ['farewell', ['peace']],
+    ['farewell', ['laters']], ['farewell', ['cya']],
+    ['farewell', ['ok', 'i', 'am', 'out']], ['farewell', ['see', 'you', 'tomorrow']],
     ['farewell', ['ok', 'bye']], ['farewell', ['good', 'night']],
     ['farewell', ['see', 'ya']], ['farewell', ['gotta', 'go']],
     ['acknowledgment', ['ok']], ['acknowledgment', ['okay']],
     ['acknowledgment', ['alright']], ['acknowledgment', ['alright', 'man']],
+    ['acknowledgment', ['done']], ['acknowledgment', ['perfect']],
+    ['acknowledgment', ['same', 'here', 'man']], ['acknowledgment', ['no', 'promises']],
     ['acknowledgment', ['got', 'it']], ['acknowledgment', ['gotcha']],
     ['acknowledgment', ['bet']], ['acknowledgment', ['say', 'less']],
     ['acknowledgment', ['true']], ['acknowledgment', ['facts']],
@@ -4249,6 +4293,7 @@ function attachSwarmModelRuntime(globalScope) {
     ['acknowledgment', ['good', 'talk']], ['acknowledgment', ['damn']],
     ['filler', ['nothing']], ['filler', ['nevermind']],
     ['filler', ['chillin']], ['filler', ['just', 'chilling']],
+    ['filler', ['just', 'hanging']], ['filler', ['wait', 'one', 'sec']],
     ['filler', ['wait']], ['filler', ['no', 'updates']],
     ['filler', ['psych', 'i', 'am', 'still', 'here']],
     ['filler', ['i', 'am', 'still', 'here']],
@@ -4312,11 +4357,15 @@ function attachSwarmModelRuntime(globalScope) {
     { cue: /(lol|lmao|haha)/, pool: ['Heh, nice.', 'Ha, fair.', 'I try.'] },
     { cue: /welcome/, pool: ['Anytime.', 'Of course. What else?', 'You got it.'] },
     { cue: /(back|again)/, pool: ['Welcome back. What are we getting into?', 'Back already — what is up?', 'Hey hey, welcome back.'] },
-    { cue: /(bye|later|peace)/, pool: ['Got it, later.', 'Later then — I am around.', 'Alright, peace. Holler when you are back.'] },
+    { cue: /(bye|later|peace|cya|see you tomorrow|i am out)/, pool: ['Got it, later.', 'Later then — I am around.', 'Alright, peace. Holler when you are back.'] },
     { cue: /good talk/, pool: ['Good talk. Catch you later.', 'Agreed. I am around.'] },
+    { cue: /same here/, pool: ['Same here, honestly.', 'Likewise.'] },
+    { cue: /no promises/, pool: ['Ha, fair enough.', 'No promises needed.'] },
+    { cue: /\bdone\b/, pool: ['Done deal.', 'Noted — all done.', 'Got it, done.'] },
+    { cue: /\bperfect\b/, pool: ['Perfect.', 'Love it.', 'Could not have said it better.'] },
     { cue: /updates?/, pool: ['Noted. Holler when there is news.', 'All good — we will get to it.'] },
     { cue: /psych/, pool: ['Ha, knew it.', 'You got me. Still here too.'] },
-    { cue: /chillin|chilling/, pool: ['Solid. What is good with you?', 'Chilling is valid. What are you up to?', 'Nice, enjoy it.'] },
+    { cue: /chillin|chilling|hanging/, pool: ['Solid. What is good with you?', 'Chilling is valid. What are you up to?', 'Nice, enjoy it.'] },
     { cue: /nothing/, pool: ['Fair. Holler if you need me.', 'Nothing it is. What is on your mind anyway?'] },
     { cue: /nevermind/, pool: ['No worries. What is next?', 'All good.'] },
     { cue: /sure/, pool: ['Alright.', 'Cool, noted.', 'Say less.'] },
@@ -5418,6 +5467,15 @@ function attachSwarmModelRuntime(globalScope) {
       if (value.length > 3 && value.endsWith('s') && !value.endsWith('ss')) return value.slice(0, -1);
       return value;
     };
+    // Inflection-tolerant root equality for the strict chat relevance bar
+    // below: lexicalRoot turns "debugging" into "debugg" while "debug" stays
+    // "debug", so collapse a doubled final consonant on either side before
+    // comparing (module-scope undoubledRoot). Without this the strict bar
+    // silently kills legitimate retained recall on ordinary inflection
+    // ("how do i debug ..." vs a "Python debugging" record). Only adds
+    // matches for words that differ by a doubled final consonant; the
+    // strict-majority and subject-agreement requirements still hold.
+    const rootsEqualChat = (a, b) => a === b || undoubledRoot(a) === b || a === undoubledRoot(b);
     const queryTerms = new Set(baseTokens(message).filter(token => token.length > 3 && !genericQueryTerms.has(token)));
     const queryRoots = new Set([...queryTerms].map(lexicalRoot).filter(root => root.length > 2));
     const adviceOnly = /\b(?:do not|don't|dont|without|rather than)\s+(?:change|edit|modify|write|patch|touch)\b[\s\S]{0,45}\b(?:files?|repo(?:sitory)?|workspace|code)\b/i.test(message);
@@ -5444,28 +5502,48 @@ function attachSwarmModelRuntime(globalScope) {
     ].filter(Boolean).join(' ')).filter(token => token.length > 3 && !genericQueryTerms.has(token)));
     const routeRoots = new Set([...routeTerms].map(lexicalRoot).filter(root => root.length > 2));
     const routeRootMatches = [...queryRoots].filter(root => routeRoots.has(root));
+    // Chat relevance is strict for EVERY routed skill, not just learned facts.
     // A compiled learned fact is subject-specific ("List of capitals of
     // France"). One shared generic root ("capital") must not let it answer a
     // different subject's question ("capital of Japan"), so learned facts
     // require a strict majority of their topic roots to match. Curated
-    // procedures keep the original any-root behavior. As with the other two
-    // knowledge-matching sites, one-directional coverage is not subject
+    // procedures used to keep the original any-root behavior, but that let
+    // one coincidental root ("head" in "head out", "word" alone) surface
+    // internal benchmark / arena / eval records as chat answers (fix-round 3,
+    // bug 2). In the chat lane, curated procedures clear the same strict bar:
+    // a strict majority of their topic roots must match. As with the other
+    // two knowledge-matching sites, one-directional coverage is not subject
     // agreement ("west germany" vs "germany"), so require whole-subject
     // agreement too.
     const routeTopicRoots = new Set(baseTokens(String(route?.skill?.topic || ''))
       .filter(token => token.length > 3 && !genericQueryTerms.has(token))
       .map(lexicalRoot)
       .filter(root => root.length > 2));
-    const routeMatchedTopicRoots = [...queryRoots].filter(root => routeTopicRoots.has(root)).length;
-    const routeIsLearnedFact = Boolean(route?.learnedRecordId || route?.skill?.sourceLearnedRecordId || route?.skill?.lariTypedRecordId);
+    const routeMatchedTopicRoots = [...queryRoots].filter(root =>
+      [...routeTopicRoots].some(topicRoot => rootsEqualChat(root, topicRoot))
+    ).length;
     const routeRelevant = route && routeRootMatches.length > 0
-      && (!routeIsLearnedFact || routeMatchedTopicRoots > routeTopicRoots.size / 2)
-      && (!routeIsLearnedFact || knowledgeSubjectAgrees(route?.skill?.topic || '', message))
+      && routeMatchedTopicRoots > routeTopicRoots.size / 2
+      && knowledgeSubjectAgrees(route?.skill?.topic || '', message)
       ? route : null;
     const preferences = getUserPreferences(model, 'general', context);
     const tone = preferences.find(item => item.key === 'tone' || item.key === 'style')?.value || 'direct, practical, clear';
     let evidence = relevantHits.slice(0, 3).map(sentenceFromKnowledge).filter(Boolean);
     let routeText = routeRelevant?.skill?.answerTemplate || routeRelevant?.skill?.summary || '';
+    // Internal eval/arena/benchmark records must never answer chat, even if
+    // one ever clears the relevance bar above (see isInternalEvalRecordText).
+    evidence = evidence.filter(sentence => !isInternalEvalRecordText(sentence));
+    if (routeText && isInternalEvalRecordText(routeText)) routeText = '';
+    // Phatic turns and vague requests are casual chat: retained records and
+    // routed procedures stay silent. Casual chat must never receive internal
+    // record text.
+    const CHAT_PHATIC_INTENTS = new Set(['greeting', 'small_talk', 'goodbye', 'follow_up', 'thanks',
+      'reaction_laugh', 'reaction_hype', 'reaction_damn', 'reaction_ack', 'reaction_shrug',
+      'mood_low', 'mood_high', 'mood_vent']);
+    if (CHAT_PHATIC_INTENTS.has(intent) || (intent === 'open_chat' && detectVagueChatRequest(message))) {
+      evidence = [];
+      routeText = '';
+    }
     // A known factual frame names the exact value being asked for (a capital,
     // a year, a count, an office holder). Evidence sentences that carry no
     // signal for that frame are topic lore, not an answer -- drop them so the
@@ -5636,7 +5714,9 @@ function attachSwarmModelRuntime(globalScope) {
         const best = deepHits && deepHits[0];
         if (best && best.score > 0.3) {
           const detail = sentenceFromKnowledge(best);
-          answer = detail || `On ${ctx.topic}: I have got the basics covered. What angle do you want?`;
+          // Internal eval/arena/benchmark records stay out of follow-ups too.
+          answer = (detail && !isInternalEvalRecordText(detail)) ? detail
+            : `On ${ctx.topic}: I have got the basics covered. What angle do you want?`;
         } else {
           answer = tone === 'blunt' ? `On ${ctx.topic}: that is all I have got. Ask me something specific.`
             : tone === 'professional' ? `Regarding ${ctx.topic}: I have shared what I have available. Is there a specific aspect you would like to explore?`
@@ -33219,6 +33299,11 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
           // program must run that program. Returning its summary here would
           // bypass claim selection and erase sentence-level provenance.
           if (canonical?.payload?.responsePlan?.composition === 'grounded_research_claims') return false;
+          // Internal benchmark/eval/arena records must never answer chat,
+          // even on a genuine topic match (fix-round 3, bug 2). The stale
+          // "public model API" fallback note and friends are dev records,
+          // not user knowledge.
+          if (isInternalEvalRecordText(`${hit.item?.topic || ''} ${hit.item?.subject || ''} ${hit.item?.summary || ''}`)) return false;
           const topicTerms = new Set(baseTokens(`${hit.item?.topic || ''} ${hit.item?.subject || ''}`)
             .filter(term => term.length > 3 && !genericTerms.has(term)));
           const matchedTopicTerms = [...topicTerms].filter(term => promptTerms.has(term));

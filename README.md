@@ -33,9 +33,11 @@ npm install
 # The model (the retained state) lives at models/lari/current/swarm-model.json and IS tracked:
 # exactly one current model is committed; a newer model overwrites it.
 # Checkpoint backups and staging models stay gitignored.
-node scripts/test_lari_open_chat.js       # open-chat routing + fuzzy layer: 93/93 expected
+node scripts/test_lari_open_chat.js       # open-chat routing + fuzzy layer: 119/119 expected
 node scripts/test_lari_discourse_miner.js # discourse miner: 31/31 expected
 node scripts/test_lari_miner_learning.js  # miner induces from real convo, rejects junk: 30/30 expected
+node scripts/test_lari_miner_legacy_migration.js   # legacy miner state migrates cleanly: 22/22 expected
+node scripts/test_lari_chat_no_internal_leak.js    # internal records never answer chat: 19/19 expected
 node scripts/test_lari_attribute_chat.js  # chat regression: 8/8 expected
 node scripts/test_lari_learn_retention.js # research -> retain -> recall: 10/10 expected
 node scripts/run_lari_consolidation.js    # nightly consolidation (dry-run supported)
