@@ -13,8 +13,10 @@ Start with [VISION.md](VISION.md) — read it before changing anything.
 **Not ready for public beta.** The honest state of the project is tracked in the working copy;
 the strongest verified claim to date is bounded verified code-mutation search (a defect class the
 seed vocabulary could not express, repaired after growing the rule, verified against 1317 assertions
-it does not control). Chat is under active development (September 2026): identity, attribute
-questions, and live research-then-retain now work; person/date/quantity frames are next.
+it does not control). Chat is under active development (September 2026): open-chat routing with a
+fuzzy phatic layer (one-word changes no longer break it), a discourse miner that actually learns
+from real conversation (corrections, instructional directives, and repeated successful exchanges
+induce retained operators), a nightly consolidation loop, and bounded checkpoint pruning.
 
 ## Layout
 
@@ -28,16 +30,21 @@ questions, and live research-then-retain now work; person/date/quantity frames a
 
 ```bash
 npm install
-# Place the model file at models/lari/current/swarm-model.json
-# (the model is the retained state; it is gitignored by design)
-node scripts/test_lari_attribute_chat.js   # chat regression: 8/8 expected
-node scripts/test_lari_learn_retention.js  # research -> retain -> recall: 10/10 expected
-node scripts/lari_discourse_learn_demo.js  # correction-learning demo
+# The model (the retained state) lives at models/lari/current/swarm-model.json and IS tracked:
+# exactly one current model is committed; a newer model overwrites it.
+# Checkpoint backups and staging models stay gitignored.
+node scripts/test_lari_open_chat.js       # open-chat routing + fuzzy layer: 93/93 expected
+node scripts/test_lari_discourse_miner.js # discourse miner: 31/31 expected
+node scripts/test_lari_miner_learning.js  # miner induces from real convo, rejects junk: 30/30 expected
+node scripts/test_lari_attribute_chat.js  # chat regression: 8/8 expected
+node scripts/test_lari_learn_retention.js # research -> retain -> recall: 10/10 expected
+node scripts/run_lari_consolidation.js    # nightly consolidation (dry-run supported)
 ```
 
 Live learning checkpoints the model file automatically after any chat turn that learns
 (`checkpointLariModel`), with a timestamped backup first. Research that does not improve the
 answer is discarded, not retained. `LARI_DISABLE_LEARN_CHECKPOINT=1` disables checkpointing.
+Checkpoint backups are pruned to the newest 5 (`LARI_CHECKPOINT_BACKUPS` overrides).
 
 ## Rules
 

@@ -12,6 +12,13 @@
 //      Pairs are clustered by discourse goal; three pairs sharing one goal
 //      trigger induceLariGeneralChatProcedureFromFailures, and the induced
 //      program is verified by a trigger/reload check before it counts.
+//      Fast path: a correction that DICTATES the right response ("just say
+//      X", "when I say thanks just say 'anytime'") completes its pair
+//      immediately and seeds a success exemplar.
+//      Second track: repeated SUCCESS. The same stimulus answered the same
+//      way three times, never corrected in between, induces a
+//      success-exemplar discourse operator (observed phrase variants are
+//      recorded for the fuzzy matching layer).
 //      Nothing here alters the answer — it only observes and learns.
 //
 //   2. NIGHTLY CONSOLIDATION. Episodic memories are raw footage; beliefs are
@@ -64,7 +71,11 @@ const CORRECTION_RES = [
   /\bi (asked|meant|said)\b.{0,50}\bnot\b/i,
   /\bno,? (that'?s|it'?s) not\b/i,
   /\bmissed the point\b/i,
-  /\banswer(ing)? my question\b/i
+  /\banswer(ing)? my question\b/i,
+  // Instructional directive: the user teaches the right behavior after a
+  // failure ("when I say thanks just say 'anytime'", "brb means be right
+  // back, when I say brb you say got it"). This is a correction.
+  /\bwhen i say\b.{0,80}?\b(just\s+)?(say|answer|reply|respond)\b/i
 ];
 const SHORT_REJECTIONS = new Set(['naw', 'nope', 'nah', 'wrong', 'no', 'incorrect']);
 const APPROVAL_RE = /\b(thanks|thank you|thx|perfect|exactly|nailed it|nice|love it|good (one|shit|call)|lol|lmao|haha|awesome|great)\b/i;
@@ -84,7 +95,9 @@ function detectSignal(currentMessage, lastTurn) {
   }
   // Leading rejection: "naw man, that wasnt an answer..." — Greg-style.
   // Bare "naw" is caught above; this catches it opening a longer correction.
-  if (/^\s*(naw|nah|nope|wrong|incorrect)\b/i.test(text) && wc <= 12) {
+  // Cap is 40 words: real corrections open with the rejection and then
+  // explain ("naw man, that was internal benchmark junk leaking into chat...").
+  if (/^\s*(naw|nah|nope|wrong|incorrect)\b/i.test(text) && wc <= 40) {
     cues.push('leading_rejection'); return { signal: 'correction', cues };
   }
   if (APPROVAL_RE.test(text) && (wc <= 10 || /^\s*(thanks|thank you|thx)\b/i.test(text))) {
@@ -103,6 +116,74 @@ function detectSignal(currentMessage, lastTurn) {
 }
 
 // ---------------------------------------------------------------------------
+// Instruction extraction: some corrections literally dictate the right
+// response ("just say 'yes, im a he'", "when I say thanks just say
+// 'you got it' or 'anytime'"). The dictated response is learnable evidence
+// on its own — the pair completes immediately, no next-turn wait.
+// Returns { stimulus, response, alternatives } or null. `stimulus` is the
+// "when I say X" trigger when present, else null (caller falls back to the
+// failed prompt).
+// ---------------------------------------------------------------------------
+
+const INSTRUCTION_RESPONSE_STOP = new Set(['that', 'this', 'it', 'so', 'them', 'something']);
+
+function cleanInstructionResponse(raw) {
+  let s = String(raw || '').replace(/["'“”‘’]/g, '').trim();
+  s = s.replace(/[.,!?;:\s]+$/g, '').trim();
+  return s;
+}
+
+function extractInstruction(correctionText) {
+  const text = String(correctionText || '').trim();
+  if (!text) return null;
+  let stimulus = null;
+  let response = null;
+  let m = /\bwhen\s+i\s+say\s+(.+?)\s+just\s+(?:say|answer|reply|respond)\b\s*:?\s*(.+)$/i.exec(text)
+    || /\bwhen\s+i\s+say\s+(.+?)\s+you\s+say\s+(.+)$/i.exec(text);
+  if (m) {
+    stimulus = String(m[1]).replace(/["'“”‘’]/g, '').trim();
+    response = cleanInstructionResponse(m[2]);
+  } else if ((m = /\bjust\s+(?:say|answer)\s*:\s*(.+)$/i.exec(text))) {
+    response = cleanInstructionResponse(m[1]);
+  } else if ((m = /\bjust\s+say\s+['"](.+?)['"]\s*$/i.exec(text))) {
+    response = cleanInstructionResponse(m[1]);
+  } else if ((m = /\banswer\s+(?:\w+\s+)?like\s+['"](.+?)['"]\s*$/i.exec(text))) {
+    // "answer casual like 'not much, what about you'"
+    response = cleanInstructionResponse(m[1]);
+  } else if ((m = /\bthe\s+answer\s*(?:is\s*)?:?\s*(.+?)\s+say\s+it\s+back\b/i.exec(text))) {
+    // "the answer:I built you because ... . say it back in your own words"
+    response = cleanInstructionResponse(m[1]);
+  }
+  if (!response || response.length < 3 || INSTRUCTION_RESPONSE_STOP.has(response.toLowerCase())) return null;
+  if (stimulus && stimulus.length > 120) stimulus = stimulus.slice(0, 120);
+  const alternatives = response.split(/\s+or\s+|\s*\/\s*/i).map(s => s.trim()).filter(s => s.length >= 2);
+  return { stimulus: stimulus || null, response, alternatives: alternatives.length ? alternatives : [response] };
+}
+
+// Normalized stimulus key: lowercase, punctuation collapsed. Phrase variants
+// ("hey again" vs "hey") do NOT collapse here — the fuzzy matching layer
+// handles those at answer time; the operator records every observed variant.
+function stimulusKey(text) {
+  return String(text || '').toLowerCase().replace(/[^a-z0-9' ]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+// Normalized response shape: numbers collapsed so "It's 10:54 AM EDT." and
+// "It's 11:03 AM EDT." count as the same repeated success.
+function responseShape(text) {
+  return String(text || '').toLowerCase().replace(/\d+(\.\d+)?/g, '<n>').replace(/\s+/g, ' ').trim();
+}
+
+// Prompt overlap for the pair-completion gates. Content-token overlap when
+// both sides have content tokens; falls back to raw-word overlap for short
+// prompts ("are you a he") that carry no content tokens at all.
+function promptOverlap(aText, bText) {
+  const a = contentTokens(aText), b = contentTokens(bText);
+  if (a.length && b.length) return overlapRatio(a, b);
+  const aw = words(aText).filter(w => w.length > 1), bw = words(bText).filter(w => w.length > 1);
+  return overlapRatio(aw, bw);
+}
+
+// ---------------------------------------------------------------------------
 // Miner state (per model => per user in the Telegram setup).
 // ---------------------------------------------------------------------------
 
@@ -116,6 +197,8 @@ function minerState(model) {
     clusters: {},            // key -> [pairIndex...] (indexes into pairs)
     calibration: {},         // intent -> { turns, corrections }
     inductions: [],          // induction attempts, audit
+    successExemplars: {},    // stimulusKey -> { stimulus, responseShape, responseExample, count, affirmed, variants, instructed, induced }
+    successOperators: [],    // induced stimulus->response operators from repeated successes, bounded 40
     discardedRecoveries: 0   // pending recoveries dropped: new question, not a retry
   };
   return model.lariDiscourseMiner;
@@ -149,6 +232,155 @@ function calibrationSummary(model) {
 }
 
 // ---------------------------------------------------------------------------
+// Pair completion + success-operator induction helpers.
+// ---------------------------------------------------------------------------
+
+// Push a completed failure->recovery pair, cluster it, and attempt induction
+// when the cluster fills (3 pairs). Shared by every completion path.
+function completePair(state, fields, model, bindings, report) {
+  const pair = {
+    prompt: String(fields.prompt || '').slice(0, 500),
+    failedAnswer: String(fields.failedAnswer || '').slice(0, 500),
+    correctedAnswer: String(fields.correctedAnswer || '').slice(0, 500),
+    failedIntent: fields.failedIntent || null,
+    correctionText: String(fields.correctionText || '').slice(0, 500),
+    signal: fields.signal || null,
+    via: fields.via || 'recovery',
+    at: new Date().toISOString()
+  };
+  if (!pair.prompt || !pair.correctedAnswer) return false;
+  state.pairs.push(pair);
+  if (state.pairs.length > 60) state.pairs.splice(0, state.pairs.length - 60);
+  const key = clusterKey(model, pair.prompt, bindings);
+  state.clusters[key] = state.clusters[key] || [];
+  state.clusters[key].push(state.pairs.length - 1);
+  if (report) report.pairCount = state.pairs.length;
+  // Three pairs, one cluster -> attempt induction (bounded: once per cluster fill).
+  if (state.clusters[key].length >= 3) {
+    const induced = tryInduceCluster(model, key, state, bindings);
+    if (report) report.induced = induced;
+  }
+  return true;
+}
+
+// An explicit user instruction ("when I say thanks just say 'anytime'")
+// seeds a success exemplar. The instruction itself counts double: a stated
+// rule is stronger evidence than one observed repetition.
+function seedInstructedExemplar(state, instruction) {
+  const key = stimulusKey(instruction.stimulus);
+  if (!key) return;
+  const shape = responseShape(instruction.response);
+  const now = new Date().toISOString();
+  state.successExemplars[key] = {
+    stimulus: String(instruction.stimulus).slice(0, 120),
+    responseShape: shape,
+    responseExample: String(instruction.response).slice(0, 300),
+    alternatives: instruction.alternatives || [instruction.response],
+    count: 2,
+    affirmed: 0,
+    violations: 0,
+    variants: [String(instruction.stimulus).slice(0, 120)],
+    instructed: true,
+    induced: false,
+    at: now,
+    lastAt: now
+  };
+  pruneExemplars(state);
+  maybeInduceSuccessOperator(state, key, state.successExemplars[key]);
+}
+
+function pruneExemplars(state) {
+  const keys = Object.keys(state.successExemplars || {});
+  if (keys.length <= 120) return;
+  keys.sort((a, b) => String(state.successExemplars[a].lastAt || '').localeCompare(String(state.successExemplars[b].lastAt || '')));
+  for (const k of keys.slice(0, keys.length - 120)) delete state.successExemplars[k];
+}
+
+// Repeated successful exchanges (same stimulus -> same response shape, never
+// corrected in between) become a learnable discourse operator at 3
+// observations. Observed phrase variants are recorded on the operator so the
+// fuzzy matching layer can match them at answer time.
+function maybeInduceSuccessOperator(state, key, ex) {
+  if (!ex || ex.induced || ex.count < 3) return null;
+  const crypto = require('crypto');
+  const id = 'lari.learned.operator.chat.success.' + crypto.createHash('sha256')
+    .update(key + '|' + ex.responseShape).digest('hex').slice(0, 12);
+  const operator = {
+    id,
+    kind: 'success_exemplar_operator',
+    stimulusKey: key,
+    stimuli: [...(ex.variants || [])],
+    responseShape: ex.responseShape,
+    responseExample: ex.responseExample,
+    alternatives: ex.alternatives || null,
+    evidenceCount: ex.count,
+    affirmed: ex.affirmed || 0,
+    instructed: !!ex.instructed,
+    confidence: Math.min(0.95, 0.6 + 0.1 * ex.count),
+    inducedAt: new Date().toISOString(),
+    provenance: { creationSource: 'discourse_miner_repeated_success', verification: 'uncorrected_repetition' }
+  };
+  ex.induced = true;
+  state.successOperators.push(operator);
+  if (state.successOperators.length > 40) state.successOperators.splice(0, state.successOperators.length - 40);
+  state.inductions.push({ at: new Date().toISOString(), cluster: 'success:' + key, attempted: true, learned: true, kind: 'success_exemplar', operatorId: id, evidenceCount: ex.count });
+  if (state.inductions.length > 40) state.inductions.splice(0, state.inductions.length - 40);
+  return operator;
+}
+
+// Every non-correction turn is success evidence for its stimulus. A
+// correction resets the exemplar for the failed stimulus (the response did
+// not land). Approval affirms the previous turn's exemplar.
+function recordSuccessExemplar(state, userMessage, lariAnswer, signal, prevTurn) {
+  if (signal === 'correction' || signal === 'rephrase') {
+    if (prevTurn && prevTurn.userMessage) {
+      const ex = state.successExemplars[stimulusKey(prevTurn.userMessage)];
+      if (ex && !ex.induced) { ex.count = 0; ex.affirmed = 0; }
+    }
+    return null;
+  }
+  if (signal === 'approval' && prevTurn && prevTurn.userMessage) {
+    const aEx = state.successExemplars[stimulusKey(prevTurn.userMessage)];
+    if (aEx) aEx.affirmed += 1;
+  }
+  if (!lariAnswer) return null;
+  const key = stimulusKey(userMessage);
+  if (!key) return null;
+  const shape = responseShape(lariAnswer);
+  const now = new Date().toISOString();
+  const raw = String(userMessage).slice(0, 120);
+  let ex = state.successExemplars[key];
+  if (!ex || (!ex.instructed && ex.responseShape !== shape)) {
+    // New stimulus, or Lari changed its answer: start (or restart) counting.
+    ex = state.successExemplars[key] = {
+      stimulus: raw, responseShape: shape, responseExample: String(lariAnswer).slice(0, 300),
+      alternatives: null, count: 1, affirmed: 0, violations: 0,
+      variants: [raw], instructed: false, induced: false, at: now, lastAt: now
+    };
+    pruneExemplars(state);
+    return null;
+  }
+  if (ex.instructed && !ex.induced) {
+    // Instruction-seeded: only a matching response confirms it. Anything
+    // else is a violation of the user's stated rule, not new evidence.
+    const matched = shape === ex.responseShape
+      || (ex.alternatives || []).some(alt => shape.includes(responseShape(alt)));
+    if (matched) {
+      ex.count += 1;
+      ex.lastAt = now;
+      if (!ex.variants.includes(raw) && ex.variants.length < 6) ex.variants.push(raw);
+    } else {
+      ex.violations = (ex.violations || 0) + 1;
+    }
+    return maybeInduceSuccessOperator(state, key, ex);
+  }
+  ex.count += 1;
+  ex.lastAt = now;
+  if (!ex.variants.includes(raw) && ex.variants.length < 6) ex.variants.push(raw);
+  return maybeInduceSuccessOperator(state, key, ex);
+}
+
+// ---------------------------------------------------------------------------
 // Main entry: call once per completed turn, after the answer is final.
 // Returns a small report; never throws.
 // ---------------------------------------------------------------------------
@@ -160,10 +392,11 @@ function noteTurn(model, turn = {}, bindings = {}) {
   const intent = String(turn.intent || bindings.classifyIntent?.(userMessage) || 'unknown');
   const confidence = typeof turn.confidence === 'number' ? turn.confidence : null;
   const userScope = String(turn.userScope || 'default');
-  const report = { signal: 'neutral', cues: [], induced: null, pairCount: state.pairs.length, confidenceCalibrated: null };
+  const report = { signal: 'neutral', cues: [], induced: null, successInduced: null, successOperators: state.successOperators.length, pairCount: state.pairs.length, confidenceCalibrated: null };
 
   try {
     const detected = detectSignal(userMessage, state.lastTurn);
+    const prevTurn = state.lastTurn;
     report.signal = detected.signal;
     report.cues = detected.cues;
     const isCorrection = detected.signal === 'correction' || detected.signal === 'rephrase';
@@ -179,42 +412,40 @@ function noteTurn(model, turn = {}, bindings = {}) {
     //      - the correction itself restated the failed prompt, so Lari's reply
     //        to the correction is the recovery.
     //    Anything else (new question, topic change) discards the pending
-    //    recovery instead of manufacturing a junk pair.
-    if (state.pendingRecovery && !isCorrection && state.lastTurn && state.lastTurn.lariAnswer) {
+    //    recovery instead of manufacturing a junk pair. Thresholds are 0.35:
+    //    strict enough that an unrelated follow-up still fails, loose enough
+    //    that a genuine restatement with different filler words passes.
+    //    promptOverlap falls back to raw-word overlap for short prompts
+    //    ("are you a he") that carry no content tokens at all.
+    if (state.pendingRecovery && !isCorrection && prevTurn && prevTurn.lariAnswer) {
       const failed = state.pendingRecovery.failedTurn;
-      const failedTokens = contentTokens(failed.userMessage || '');
-      const retryOverlap = overlapRatio(failedTokens, contentTokens(userMessage));
-      const correctionOverlap = overlapRatio(failedTokens, contentTokens(state.pendingRecovery.correctionText || ''));
+      const retryOverlap = promptOverlap(failed.userMessage || '', userMessage);
+      const correctionOverlap = promptOverlap(failed.userMessage || '', state.pendingRecovery.correctionText || '');
       let correctedAnswer = null;
-      if (failedTokens.length >= 1 && retryOverlap >= 0.5 && lariAnswer) {
+      let via = 'recovery';
+      if (retryOverlap >= 0.35 && lariAnswer) {
         correctedAnswer = lariAnswer;                       // user retried -> this answer is the fix
+        via = 'retry';
       } else if (state.pendingRecovery.retryPrompt) {
-        correctedAnswer = state.lastTurn.lariAnswer;        // Lari answered the rephrased retry
+        correctedAnswer = prevTurn.lariAnswer;              // Lari answered the rephrased retry
+        via = 'rephrase_retry';
       } else if (detected.signal === 'approval') {
-        correctedAnswer = state.lastTurn.lariAnswer;        // user accepted the recovery
-      } else if (failedTokens.length >= 1 && correctionOverlap >= 0.5) {
-        correctedAnswer = state.lastTurn.lariAnswer;        // correction restated the prompt
+        correctedAnswer = prevTurn.lariAnswer;              // user accepted the recovery
+        via = 'approval';
+      } else if (correctionOverlap >= 0.35) {
+        correctedAnswer = prevTurn.lariAnswer;              // correction restated the prompt
+        via = 'correction_restatement';
       }
       if (correctedAnswer) {
-        const pair = {
+        completePair(state, {
           prompt: failed.userMessage,
           failedAnswer: failed.lariAnswer,
           correctedAnswer,
           failedIntent: failed.intent || null,
           correctionText: state.pendingRecovery.correctionText,
           signal: state.pendingRecovery.signal,
-          at: new Date().toISOString()
-        };
-        state.pairs.push(pair);
-        if (state.pairs.length > 60) state.pairs.splice(0, state.pairs.length - 60);
-        const key = clusterKey(model, pair.prompt, bindings);
-        state.clusters[key] = state.clusters[key] || [];
-        state.clusters[key].push(state.pairs.length - 1);
-        report.pairCount = state.pairs.length;
-        // 2. Three pairs, one cluster -> attempt induction (bounded: once per cluster fill).
-        if (state.clusters[key].length >= 3) {
-          report.induced = tryInduceCluster(model, key, state, bindings);
-        }
+          via
+        }, model, bindings, report);
       } else {
         state.discardedRecoveries = (state.discardedRecoveries || 0) + 1;
       }
@@ -222,34 +453,69 @@ function noteTurn(model, turn = {}, bindings = {}) {
     }
 
     // 3. This message corrects the previous turn -> mark failure, await recovery.
-    //    Exception: a rephrase that restates the FAILED prompt is a retry of it,
-    //    not a new failure — record it on the pending recovery instead.
-    if (isCorrection && state.lastTurn && state.lastTurn.userMessage) {
-      const pending = state.pendingRecovery;
-      const failedPrompt = pending && pending.failedTurn ? pending.failedTurn.userMessage || '' : '';
-      const retryOfFailed = pending && !pending.retryPrompt && detected.signal === 'rephrase' &&
-        overlapRatio(contentTokens(failedPrompt), contentTokens(userMessage)) >= 0.5;
-      if (retryOfFailed) {
-        pending.retryPrompt = userMessage.slice(0, 500);
-        pending.at = new Date().toISOString();
-      } else {
-        state.pendingRecovery = {
-          failedTurn: { ...state.lastTurn },
+    //    Fast path: the correction DICTATES the right response ("just say X",
+    //    "when I say thanks just say 'anytime'") — the pair completes NOW
+    //    with the dictated response; no next-turn wait, no overlap math.
+    //    Otherwise a rephrase that restates the FAILED prompt is a retry of
+    //    it, not a new failure — record it on the pending recovery instead.
+    if (isCorrection && prevTurn && prevTurn.userMessage) {
+      const instruction = detected.signal === 'correction' ? extractInstruction(userMessage) : null;
+      if (instruction && prevTurn.lariAnswer) {
+        completePair(state, {
+          prompt: instruction.stimulus || prevTurn.userMessage,
+          failedAnswer: prevTurn.lariAnswer,
+          correctedAnswer: instruction.response,
+          failedIntent: prevTurn.intent || null,
           correctionText: userMessage.slice(0, 500),
           signal: detected.signal,
-          at: new Date().toISOString()
-        };
+          via: 'instruction'
+        }, model, bindings, report);
+        seedInstructedExemplar(state, instruction);
+        state.pendingRecovery = null;
+      } else {
+        const pending = state.pendingRecovery;
+        const failedPrompt = pending && pending.failedTurn ? pending.failedTurn.userMessage || '' : '';
+        const retryOfFailed = pending && !pending.retryPrompt && detected.signal === 'rephrase' &&
+          promptOverlap(failedPrompt, userMessage) >= 0.35;
+        if (retryOfFailed) {
+          pending.retryPrompt = userMessage.slice(0, 500);
+          pending.at = new Date().toISOString();
+        } else {
+          state.pendingRecovery = {
+            failedTurn: { ...prevTurn },
+            correctionText: userMessage.slice(0, 500),
+            signal: detected.signal,
+            at: new Date().toISOString()
+          };
+        }
       }
     }
 
     // 4. Calibration bookkeeping. A correction blames the *previous* turn's intent.
-    if (isCorrection && state.lastTurn) {
-      recordCalibration(state, state.lastTurn.intent || 'unknown', true);
+    if (isCorrection && prevTurn) {
+      recordCalibration(state, prevTurn.intent || 'unknown', true);
     } else {
       recordCalibration(state, intent, false);
     }
 
-    // 5. Roll the turn log.
+    // 5. Success exemplars: every uncorrected turn is evidence that this
+    //    stimulus -> response shape works. A correction resets the exemplar
+    //    for the failed stimulus. Three uncorrected repetitions induce a
+    //    discourse operator (also reported below).
+    const successInduced = recordSuccessExemplar(state, userMessage, lariAnswer, detected.signal, prevTurn);
+    if (successInduced) {
+      report.successInduced = {
+        id: successInduced.id,
+        stimulusKey: successInduced.stimulusKey,
+        stimuli: successInduced.stimuli,
+        responseExample: successInduced.responseExample,
+        evidenceCount: successInduced.evidenceCount,
+        confidence: successInduced.confidence
+      };
+    }
+    report.successOperators = state.successOperators.length;
+
+    // 6. Roll the turn log.
     state.turnLog.push({
       at: new Date().toISOString(), userScope,
       userMessage: userMessage.slice(0, 300), lariAnswer: lariAnswer.slice(0, 300),
@@ -258,7 +524,7 @@ function noteTurn(model, turn = {}, bindings = {}) {
     if (state.turnLog.length > 200) state.turnLog.splice(0, state.turnLog.length - 200);
     state.lastTurn = { userMessage, lariAnswer, confidence, intent, at: new Date().toISOString() };
 
-    // 6. Calibrated confidence for this turn's answer.
+    // 7. Calibrated confidence for this turn's answer.
     if (confidence != null) {
       const factor = calibrationFactor(state, intent);
       report.confidenceCalibrated = Math.round(confidence * factor * 1000) / 1000;
@@ -536,6 +802,10 @@ function consolidateUserMemory(model, userScope = 'default', options = {}) {
 module.exports = {
   detectSignal,
   contentTokens,
+  extractInstruction,
+  stimulusKey,
+  responseShape,
+  promptOverlap,
   noteTurn,
   minerState,
   calibrationSummary,

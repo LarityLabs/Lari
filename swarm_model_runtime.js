@@ -4200,6 +4200,154 @@ function attachSwarmModelRuntime(globalScope) {
     return { report, curriculum, domains, expansion };
   }
 
+  // Fuzzy phatic intent layer (added 2026-09-19): the anchored regexes in
+  // classifyChatIntent match exact phrases only, so "hey again", "ok bye" or
+  // "psych im still here" used to fall through to the low-memory deflection.
+  // These helpers give short casual turns a second chance at small_talk via
+  // token-overlap similarity against phatic prototypes.
+
+  const FUZZY_CHAT_CONTRACTIONS = {
+    "i'm": 'i am', im: 'i am', "you're": 'you are', youre: 'you are',
+    "don't": 'do not', dont: 'do not', "doesn't": 'does not', doesnt: 'does not',
+    "can't": 'cannot', cant: 'cannot', "won't": 'will not', wont: 'will not',
+    "isn't": 'is not', isnt: 'is not', "aren't": 'are not', arent: 'are not',
+    "ain't": 'am not', aint: 'am not', "that's": 'that is', thats: 'that is',
+    "what's": 'what is', whats: 'what is', "how's": 'how is', hows: 'how is',
+    "let's": 'let us', lets: 'let us', gonna: 'going to', wanna: 'want to',
+    gotta: 'got to', yall: 'you all'
+  };
+
+  function fuzzyNormalizeChatText(message = '') {
+    let text = ` ${String(message || '').toLowerCase()} `;
+    for (const [from, to] of Object.entries(FUZZY_CHAT_CONTRACTIONS)) {
+      text = text.split(` ${from} `).join(` ${to} `)
+        .split(` ${from}' `).join(` ${to} `);
+    }
+    return text.replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  // Phatic prototypes, grouped by the 5 small-talk categories. Each entry is
+  // [category, token array]; both single tokens and short compounds are
+  // covered so near-miss phrasing still scores.
+  const FUZZY_SMALL_TALK_PROTOTYPES = [
+    ['greeting', ['hey']], ['greeting', ['yo']], ['greeting', ['hi']],
+    ['greeting', ['hello']], ['greeting', ['sup']], ['greeting', ['howdy']],
+    ['greeting', ['hey', 'again']], ['greeting', ['i', 'am', 'back']],
+    ['greeting', ['you', 'are', 'welcome']],
+    ['farewell', ['bye']], ['farewell', ['later']], ['farewell', ['peace']],
+    ['farewell', ['ok', 'bye']], ['farewell', ['good', 'night']],
+    ['farewell', ['see', 'ya']], ['farewell', ['gotta', 'go']],
+    ['acknowledgment', ['ok']], ['acknowledgment', ['okay']],
+    ['acknowledgment', ['alright']], ['acknowledgment', ['alright', 'man']],
+    ['acknowledgment', ['got', 'it']], ['acknowledgment', ['gotcha']],
+    ['acknowledgment', ['bet']], ['acknowledgment', ['say', 'less']],
+    ['acknowledgment', ['true']], ['acknowledgment', ['facts']],
+    ['acknowledgment', ['sure']], ['acknowledgment', ['yep']],
+    ['acknowledgment', ['yeah']], ['acknowledgment', ['right']],
+    ['acknowledgment', ['cool']], ['acknowledgment', ['sweet']],
+    ['acknowledgment', ['nice']], ['acknowledgment', ['good']],
+    ['acknowledgment', ['good', 'talk']], ['acknowledgment', ['damn']],
+    ['filler', ['nothing']], ['filler', ['nevermind']],
+    ['filler', ['chillin']], ['filler', ['just', 'chilling']],
+    ['filler', ['wait']], ['filler', ['no', 'updates']],
+    ['filler', ['psych', 'i', 'am', 'still', 'here']],
+    ['filler', ['i', 'am', 'still', 'here']],
+    ['laughter', ['lol']], ['laughter', ['haha']], ['laughter', ['lmao']],
+    ['laughter', ['lol', 'nice']], ['laughter', ['haha', 'nice']]
+  ];
+
+  // Token-overlap similarity: max Jaccard(tokenSet(message), tokenSet(proto))
+  // over all prototypes. Only short turns (<= 6 tokens) qualify — a long
+  // message that happens to contain "hey" is not small talk.
+  // Threshold: Jaccard >= 0.5. Rationale: every required phatic phrase
+  // ("hey again", "ok bye", "psych im still here", ...) is an exact
+  // prototype match and scores 1.0, and near-miss variants like "ok bye
+  // then" or "chillin man" still score >= 0.5, while content questions top
+  // out well below it ("are you a he" scores 0.4 against the
+  // "you are welcome" prototype, "what are you working on" scores 0.33).
+  function fuzzySmallTalkScore(message = '') {
+    const tokens = fuzzyNormalizeChatText(message).split(' ').filter(Boolean);
+    if (!tokens.length || tokens.length > 6) return 0;
+    const set = new Set(tokens);
+    let best = 0;
+    for (const [, proto] of FUZZY_SMALL_TALK_PROTOTYPES) {
+      let inter = 0;
+      for (const t of proto) if (set.has(t)) inter++;
+      const union = new Set([...proto, ...set]).size;
+      const j = union ? inter / union : 0;
+      if (j > best) best = j;
+    }
+    return best;
+  }
+
+  // Response variety: rotate through a pool so the same canned line is never
+  // emitted twice in a row. The cursor lives on the model (fuzzy-prefixed, so
+  // it cannot collide with other agents' keys); falls back to a module-level
+  // counter when no model object is available.
+  let fuzzyModuleRotationCounter = 0;
+  function fuzzyRotate(model, poolId, pool) {
+    if (!Array.isArray(pool) || !pool.length) return '';
+    const store = (model && typeof model === 'object') ? model : null;
+    let next;
+    if (store) {
+      store.fuzzyChatRotation = store.fuzzyChatRotation || {};
+      const last = Number.isInteger(store.fuzzyChatRotation[poolId]) ? store.fuzzyChatRotation[poolId] : -1;
+      next = (last + 1) % pool.length;
+      store.fuzzyChatRotation[poolId] = next;
+    } else {
+      next = (fuzzyModuleRotationCounter++) % pool.length;
+    }
+    return pool[next];
+  }
+
+  const FUZZY_BLUNT_ACKS = [
+    'Fair — that missed. What were you actually after?',
+    'My bad, that one landed wrong. What did you actually want?',
+    'Yeah, that was not it. Hit me again — what are you after?'
+  ];
+
+  // Natural varied replies for fuzzy-matched small talk, keyed by the phatic
+  // cue found in the normalized message. Ordered most-specific first.
+  const FUZZY_SMALL_TALK_REPLIES = [
+    { cue: /(lol|lmao|haha)/, pool: ['Heh, nice.', 'Ha, fair.', 'I try.'] },
+    { cue: /welcome/, pool: ['Anytime.', 'Of course. What else?', 'You got it.'] },
+    { cue: /(back|again)/, pool: ['Welcome back. What are we getting into?', 'Back already — what is up?', 'Hey hey, welcome back.'] },
+    { cue: /(bye|later|peace)/, pool: ['Got it, later.', 'Later then — I am around.', 'Alright, peace. Holler when you are back.'] },
+    { cue: /good talk/, pool: ['Good talk. Catch you later.', 'Agreed. I am around.'] },
+    { cue: /updates?/, pool: ['Noted. Holler when there is news.', 'All good — we will get to it.'] },
+    { cue: /psych/, pool: ['Ha, knew it.', 'You got me. Still here too.'] },
+    { cue: /chillin|chilling/, pool: ['Solid. What is good with you?', 'Chilling is valid. What are you up to?', 'Nice, enjoy it.'] },
+    { cue: /nothing/, pool: ['Fair. Holler if you need me.', 'Nothing it is. What is on your mind anyway?'] },
+    { cue: /nevermind/, pool: ['No worries. What is next?', 'All good.'] },
+    { cue: /sure/, pool: ['Alright.', 'Cool, noted.', 'Say less.'] },
+    { cue: /wait/, pool: ['I am here. What is up?', 'Take your time.'] },
+    { cue: /\bgood\b/, pool: ['Good stuff.', 'Nice.'] },
+    { cue: /alright/, pool: ['Alright.', 'For sure.'] }
+  ];
+
+  function fuzzySmallTalkReply(model, message = '') {
+    const norm = ` ${fuzzyNormalizeChatText(message)} `;
+    // Do not hijack turns the anchored small-talk branches already handle
+    // ("whats good", "hows it going") — they have their own answers.
+    if (/\bhow are you\b|\bhow have you been\b|\bhow (?:is|s) (?:it going|going|things)\b|\bwhat (?:is|s) up\b|\bwhat (?:is|s) (?:new|good)\b|\bhow do you do\b/.test(norm)) return null;
+    for (const entry of FUZZY_SMALL_TALK_REPLIES) {
+      if (entry.cue.test(norm)) return fuzzyRotate(model, `fuzzySmallTalk:${entry.cue}`, entry.pool);
+    }
+    return null;
+  }
+
+  // Varied clarification phrasing for vague requests, preserving the noun/verb
+  // detected by detectVagueChatRequest but never repeating the same line twice.
+  function fuzzyClarifyVague(model, message = '') {
+    const text = fuzzyNormalizeChatText(message);
+    const noun = (text.match(/\b(thing|things|stuff|something|whatever|it|that|this)\b/) || [])[1] || 'thing';
+    const verb = (text.match(/\b(look at|check|fix|find|get|do|run|make|send|open|start|stop|update|change|tell)\b/) || [])[1] || null;
+    const pool = verb
+      ? [`Which ${noun} do you want me to ${verb}?`, `What ${noun} should I ${verb} for you?`, `Be specific — which ${noun}?`]
+      : [`What ${noun} are you referring to?`, `Which ${noun} do you mean?`];
+    return fuzzyRotate(model, 'fuzzyClarifyVague', pool);
+  }
+
   function classifyChatIntent(message = '') {
     const text = String(message || '').toLowerCase();
     const trimmed = text.trim();
@@ -4269,6 +4417,12 @@ function attachSwarmModelRuntime(globalScope) {
       || /\btone\s+it\s+down\b/.test(text)
       || /\b(?:loosen|lighten)\s+up\b/.test(text)
       || /\bcut\s+the\s+fluff\b/.test(text)) return 'preference';
+    // Fuzzy phatic layer (last resort before the open_chat fallthrough): short
+    // casual turns that miss every anchored pattern above ("hey again",
+    // "ok bye", "nevermind", "psych im still here") still route to small_talk
+    // instead of the low-memory deflection. Placed last so every explicit
+    // pattern keeps precedence — nothing that already classified is affected.
+    if (fuzzySmallTalkScore(message) >= 0.5) return 'small_talk';
     return 'open_chat';
   }
 
@@ -5416,7 +5570,13 @@ function attachSwarmModelRuntime(globalScope) {
           : vulgarTone ? 'Same old shit — local, learning, absolutely feral. What is new with you?'
           : 'Same old — local, learning, unhinged. What is new with you?';
       } else {
-        answer = bluntTone ? 'What?' : 'Yo. What is up?';
+        // Fuzzy-matched phatic turns ("hey again", "im back", "chillin",
+        // "nevermind") get a natural varied reply instead of the generic
+        // "Yo. What is up?". Blunt/professional tones keep the terse default.
+        const fuzzySmallTalkAnswer = (conversationalTone === 'blunt' || conversationalTone === 'professional')
+          ? null
+          : fuzzySmallTalkReply(model, message);
+        answer = fuzzySmallTalkAnswer || (bluntTone ? 'What?' : 'Yo. What is up?');
       }
     } else if (intent === 'goodbye') {
       answer = conversationalTone === 'blunt' ? 'Bye.'
@@ -5561,10 +5721,14 @@ function attachSwarmModelRuntime(globalScope) {
       // identical low-memory line every turn.
       const bluntRejection = /^(naw|nah|nope|wrong|incorrect)\b/i.test(String(message || '').trim());
       if (bluntRejection) {
-        answer = 'Fair — that missed. What were you actually after?';
+        // Rotate acknowledgments so a repeated correction never gets the
+        // identical line twice in a row.
+        answer = fuzzyRotate(model, 'fuzzyBluntAck', FUZZY_BLUNT_ACKS);
+      } else if (detectVagueChatRequest(message)) {
+        // Detection semantics unchanged; phrasing rotates across repeats.
+        answer = fuzzyClarifyVague(model, message);
       } else {
-        const clarification = detectVagueChatRequest(message);
-        answer = clarification || pickVariant(OPEN_CHAT_DEFLECTIONS, String(message));
+        answer = fuzzyRotate(model, 'fuzzyDeflection', OPEN_CHAT_DEFLECTIONS);
       }
     } else if (evidence.length || routeText) {
       const lead = intent === 'planning'
@@ -28858,6 +29022,8 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
             signal: mined.signal,
             cues: mined.cues || [],
             induced: mined.induced && mined.induced.attempted ? mined.induced : null,
+            successInduced: mined.successInduced || null,
+            successOperators: mined.successOperators || 0,
             pairCount: mined.pairCount
           };
           if (typeof mined.confidenceCalibrated === 'number') {
@@ -35714,7 +35880,7 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
   function extractEpisodeTopics(text = '') {
     const words = String(text || '').toLowerCase().split(/\s+/)
       .map(w => w.replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, ''))
-      .filter(w => w.length > 3 && !/^(what|when|where|which|who|whom|whose|how|why|does|did|are|the|and|for|with|about|from|that|this|have|has|had|will|would|should|could|there|their|been|were|your|you|its|building|making|doing|getting|going|having|using|trying|working|setting|looking|thinking|talking|asking|telling|want|need|like|just|very|really|much|more|some|such|into|over|under|again)$/.test(w));
+      .filter(w => w.length > 3 && !/^(what|when|where|which|who|whom|whose|how|why|does|did|are|the|and|for|with|about|from|that|this|have|has|had|will|would|should|could|there|their|been|were|your|you|its|building|making|doing|getting|going|having|using|trying|working|setting|looking|thinking|talking|asking|telling|want|need|like|just|very|really|much|more|some|such|into|over|under|again|thing|things|stuff|something|anything|everything|whatever|nevermind|never|mind|updates|update|talk|talks|say|says|said|tell|tells|telling|night|morning|evening|afternoon|wait|back|ok|okay|good|great|nice|cool|sweet|lol|lmao|haha|hey|hi|yo|hello|sup|bye|later|please|thanks|thank|sorry|yeah|yep|nope|naw|nah|sure|fine|well|actually|anyway|anyways|mean|means|real|bro|dude|dawg|right|now|here|still|got|gonna)$/.test(w));
     // Keep order, dedupe, cap.
     return [...new Set(words)].slice(0, 8);
   }
@@ -38001,6 +38167,9 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     }, getTopConsolidatedBeliefs: (model, userScope, limit) => topConsolidatedBeliefs(model, userScope, limit),
     discourseCalibrationSummary: (model) => {
       try { return nodeDiscourseMiner ? nodeDiscourseMiner.calibrationSummary(model) : []; }
+      catch (_) { return []; }
+    }, getDiscourseSuccessOperators: (model) => {
+      try { return (nodeDiscourseMiner && model && model.lariDiscourseMiner && model.lariDiscourseMiner.successOperators) || []; }
       catch (_) { return []; }
     }, runLariSessionOperator, runLariAutonomousRequest, classifyLariAutonomousRequest, runLariAutonomousGrowthDaemon, planLariAutonomousGrowthDaemonMissions, scoreLariAutonomousGrowthDaemonState, compileLariSessionOperatorSkills, routeLariSessionOperatorSkill, runLariOperatorSkillArena, runLariAutonomousOperatorLearningLoop, buildLariCapabilityGraph, routeLariCapabilityGraph, buildLariCapabilityGenome, routeLariCapabilityGenome, composeLariCapabilityGenome, evaluateLariCapabilityGenome, composeLariCapabilityGraph, runLariCapabilityProductOperator, inferLariWorkspaceMissionTasks, runLariAutonomousWorkspaceMission, inferLariProjectWorkspacePlan, runLariProjectWorkspaceCreation, runLariProjectBuildReviewRepairLoop, runLariProjectInteractiveValidationLoop, inferLariInteractiveValidationBreadthPlan, runLariProjectInteractiveValidationBreadthCycle, inferLariVisualUiQualityCriticPlan, scoreLariVisualUiQualityEvidence, runLariVisualUiQualityCriticCycle, inferLariNativeCapabilityRetentionPlan, runLariNativeCapabilityRetentionCycle, inferLariFailureRepairMemoryPlan, runLariFailureRepairMemoryCycle, runLariSelfLearningAgendaExecutor, inferLariBackendProjectPlan, runLariBackendApiProjectCreation, inferLariDependencyProjectPlan, runLariDependencyInstallAndPackageCheck, inferLariSelfLearningAgenda, runLariSessionConversation, selectLariUnifiedKernelActivePolicy, runLariUnifiedTaskKernel, runLariUnifiedTaskKernelBatch, reinforceLariUnifiedKernelActivePolicies, scoreLariUnifiedKernelPolicyState, runLariUnifiedKernelPolicyEvolutionLoop, planLariUnifiedKernelSelfImprovement, runLariUnifiedKernelSelfImprovementCycle, runLariUnifiedKernelSelfImprovementLoop, scoreLariUnifiedKernelCoverage, runCheckpointedLariUnifiedKernelSelfImprovementLoop, distillLariUnifiedKernelPolicies, applyLariUnifiedKernelPolicy, runPolicyGuidedLariUnifiedKernelSelfImprovementCycle, generateLariUnifiedKernelPolicyCandidates, runLariUnifiedKernelPolicyArena, runGeneralChat, evaluateGeneralChat, runGeneralChatTrainingCycle, evaluateGeneralIntelligence, runGeneralIntelligenceTrainingCycle, runChatOperatorDecision, executeChatOperatorDecision, evaluateChatOperator, evaluateChatOperatorExecution, executeChatOperatorWithRepair, evaluateChatOperatorRepair, buildChatOperatorTaskGraph, executeChatOperatorTaskGraph, evaluateChatOperatorTaskGraph, promoteTaskGraphToSkill, routeTaskGraphSkill, executeTaskGraphSkill, scoreGraphRun, evolveTaskGraphSkill, runChatOperatorTrainingCycle, defaultFrontierLanguageRegistry, resolveFrontierLanguageRegistry, registerFrontierLanguageLane, synthesizeFrontierLanguageLane, inferFrontierLanguageLaneSpecFromWorkspace, detectFrontierLanguage, classifyFrontierReplacementMode, discoverFrontierWorkspace, inferFrontierReplacementMissionSteps, runFrontierReplacementCycle, runFrontierCodingRepairLoop, runFrontierPatchStrategyArena, evolveFrontierPatchStrategy, classifyChatIntent, runKernelCycle, runSelfPlayTraining, defaultInputsForEvent };
   api.canonicalLariKnowledgeRecords = canonicalLariKnowledgeRecords;
