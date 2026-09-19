@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "benchmark": "lari-failure-driven-research-learning",
+  "createdAt": "2026-09-19T07:48:53.530Z",
+  "query": "tell me about yourself",
+  "before": {
+    "answer": "I do not have enough local memory to answer that strongly yet. I should research the subject, verify the useful claims, and retain the supported explanation before answering confidently.",
+    "action": "chat",
+    "learnedRecordIds": [
+      "lari.learned.procedure.capability.conversation",
+      "lari.learned.procedure.language_syntax_parser.2aad7be5e1d1a7e2",
+      "lari.learned.procedure.language_semantic_interpreter.5b6e42ba81e93e68",
+      "lari.learned.procedure.language_pragmatic_context.e0921d95e5e8a005",
+      "lari.learned.procedure.conversational_learning_semantic_binding.94476c72b5a0556c"
+    ],
+    "source": "verified_knowledge_gap",
+    "retained": null
+  },
+  "evidence": {
+    "reusedPublicAnswerEvidence": false,
+    "requestedRoles": [],
+    "resolvedRoles": [],
+    "sources": [
+      {
+        "title": "Reflexive pronoun",
+        "url": "https://en.wikipedia.org/wiki/Reflexive_pronoun",
+        "type": "encyclopedia_reference"
+      },
+      {
+        "title": "Indefinite pronoun, reflexive pronoun, reciprocal pronoun and modified pronoun",
+        "url": "https://doi.org/10.4324/9781003313571-3",
+        "type": "scholarly_metadata"
+      },
+      {
+        "title": "Ta:n-A Reflexive Pronoun?",
+        "url": "https://doi.org/10.22452/jis.vol4no1.5",
+        "type": "scholarly_metadata"
+      }
+    ]
+  },
+  "learned": {
+    "id": "autonomous.knowledge.reflexive_pronoun.1789804128844",
+    "typedRecordId": "lari.learned.knowledge.80dea503d2d6dbfae7c976c7",
+    "topic": "Reflexive pronoun",
+    "confidence": 0.8987,
+    "compiled": true,
+    "deduplicatedExistingTypedRecord": false
+  },
+  "projections": {
+    "canonicalRecordCount": 349,
+    "knowledgeProjectionCount": 100,
+    "compiledSkillProjectionCount": 220,
+    "unboundCompiledSkillIds": []
+  },
+  "stateIntegrity": {
+    "changedTopLevelKeys": [
+      "compiledSkills",
+      "selfTeaching",
+      "lariLearnedRecords",
+      "lineage"
+    ],
+    "onlyCanonicalStateChanged": true,
+    "selfTeachingMetadataUnchanged": true,
+    "forbiddenTypedRecordStatePaths": [],
+    "passed": true
+  },
+  "candidate": {
+    "path": "consolidation/learning-candidates/f1b0905b942615142463e00490df5f7a478580eb63cbbfe5569d06f70d1e00e5.json",
+    "sha256": "f1b0905b942615142463e00490df5f7a478580eb63cbbfe5569d06f70d1e00e5",
+    "parentHash": "7f35a8aa07f2f74eb427d67cb16707e17284487c98d3a4895fc0a0612602377b",
+    "promoted": false
+  },
+  "transfer": [
+    {
+      "prompt": "Explain Reflexive pronoun in plain language.",
+      "answer": "In plain language: A reflexive pronoun is a pronoun that refers to another noun or pronoun (its antecedent) within the same sentence.",
+      "action": "chat",
+      "learnedRecordIds": [
+        "lari.learned.procedure.capability.conversation",
+        "lari.learned.knowledge.80dea503d2d6dbfae7c976c7",
+        "lari.learned.procedure.language_syntax_parser.2aad7be5e1d1a7e2",
+        "lari.learned.procedure.language_semantic_interpreter.5b6e42ba81e93e68",
+        "lari.learned.procedure.language_pragmatic_context.e0921d95e5e8a005",
+        "lari.learned.procedure.conversational_learning_semantic_binding.94476c72b5a0556c"
+      ],
+      "source": "verified_retained_knowledge",
+      "retained": null,
+      "passed": true
+    },
+    {
+      "prompt": "What should I understand about Reflexive pronoun?",
+      "answer": "Core idea: A reflexive pronoun is a pronoun that refers to another noun or pronoun (its antecedent) within the same sentence.",
+      "action": "chat",
+      "learnedRecordIds": [
+        "lari.learned.procedure.capability.conversation",
+        "lari.learned.knowledge.80dea503d2d6dbfae7c976c7",
+        "lari.learned.procedure.language_syntax_parser.2aad7be5e1d1a7e2",
+        "lari.learned.procedure.language_semantic_interpreter.5b6e42ba81e93e68",
+        "lari.learned.procedure.language_pragmatic_context.e0921d95e5e8a005",
+        "lari.learned.procedure.conversational_learning_semantic_binding.94476c72b5a0556c"
+      ],
+      "source": "verified_retained_knowledge",
+      "retained": null,
+      "passed": true
+    },
+    {
+      "prompt": "Why is Reflexive pronoun noteworthy?",
+      "answer": "Core idea: A reflexive pronoun is a pronoun that refers to another noun or pronoun (its antecedent) within the same sentence.",
+      "action": "chat",
+      "learnedRecordIds": [
+        "lari.learned.procedure.capability.conversation",
+        "lari.learned.knowledge.80dea503d2d6dbfae7c976c7",
+        "lari.learned.procedure.language_syntax_parser.2aad7be5e1d1a7e2",
+        "lari.learned.procedure.language_semantic_interpreter.5b6e42ba81e93e68",
+        "lari.learned.procedure.language_pragmatic_context.e0921d95e5e8a005",
+        "lari.learned.procedure.conversational_learning_semantic_binding.94476c72b5a0556c"
+      ],
+      "source": "verified_retained_knowledge",
+      "retained": null,
+      "passed": true
+    }
+  ],
+  "reload": {
+    "answer": "Core idea: A reflexive pronoun is a pronoun that refers to another noun or pronoun (its antecedent) within the same sentence.",
+    "action": "chat",
+    "learnedRecordIds": [
+      "lari.learned.procedure.capability.conversation",
+      "lari.learned.knowledge.80dea503d2d6dbfae7c976c7",
+      "lari.learned.procedure.language_syntax_parser.2aad7be5e1d1a7e2",
+      "lari.learned.procedure.language_semantic_interpreter.5b6e42ba81e93e68",
+      "lari.learned.procedure.language_pragmatic_context.e0921d95e5e8a005",
+      "lari.learned.procedure.conversational_learning_semantic_binding.94476c72b5a0556c"
+    ],
+    "source": "verified_retained_knowledge",
+    "retained": null,
+    "passed": true
+  },
+  "integrity": {
+    "activeBefore": "7f35a8aa07f2f74eb427d67cb16707e17284487c98d3a4895fc0a0612602377b",
+    "activeAfter": "7f35a8aa07f2f74eb427d67cb16707e17284487c98d3a4895fc0a0612602377b",
+    "registryBefore": "3e44e5607f9c8530d6bb5cbc980a0c187ac6ccf85e393fd83234d4df0be1efc1",
+    "registryAfter": "3e44e5607f9c8530d6bb5cbc980a0c187ac6ccf85e393fd83234d4df0be1efc1",
+    "activeUnchanged": true,
+    "registryUnchanged": true
+  },
+  "passed": true
+}

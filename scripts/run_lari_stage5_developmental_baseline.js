@@ -1,0 +1,30 @@
+#!/usr/bin/env node
+'use strict';
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const runtime = require('../swarm_model_runtime.js');
+const root = path.resolve(__dirname, '..');
+const candidatePath = path.join(root, 'consolidation', 'stage-5-candidate.json');
+const sealedPath = path.join(root, 'consolidation', 'stage-5-sealed', 'developmental-holdouts.json');
+const manifestPath = path.join(root, 'consolidation', 'stage-5-developmental-holdout-manifest.json');
+const outputPath = path.join(root, 'consolidation', 'stage-5-developmental-baseline.json');
+const baseHash = '50b4268d21d17cd068a54c60b8d0e3d8724764a54d7460d4a429ee460448a724';
+const sha = filePath => crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+if (fs.existsSync(outputPath)) throw new Error('Stage 5 developmental baseline exists.');
+if (sha(candidatePath) !== baseHash) throw new Error('Stage 5 candidate hash mismatch.');
+const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+if (sha(sealedPath) !== manifest.sealedPayload.sha256) throw new Error('Sealed payload hash mismatch.');
+const sealed = JSON.parse(fs.readFileSync(sealedPath, 'utf8'));
+const model = JSON.parse(fs.readFileSync(candidatePath, 'utf8'));
+const before = { candidate: sha(candidatePath), active: sha(path.join(root, 'models', 'lari', 'current', 'swarm-model.json')) };
+const results = sealed.cases.map(testCase => {
+  const response = runtime.sendMessageToLari(JSON.parse(JSON.stringify(model)), testCase.prompt, { modelHash: baseHash, autoGrow: false, kernel: { useBenchmarkSystem: false, useCapabilityGraph: true, capabilityGraph: { minScore: 0 }, chat: { minMemoryScore: 0, minRouteScore: 0 } } });
+  const answer = String(response.answer || '').toLowerCase();
+  const hits = testCase.expectedConcepts.filter(concept => answer.includes(concept));
+  return { id: testCase.id, kind: testCase.kind, promptHash: crypto.createHash('sha256').update(testCase.prompt).digest('hex'), hitCount: hits.length, required: testCase.minimumConceptHits, hits, selectedSkillId: response.capabilitySelection?.sourceSkillId || null, passed: hits.length >= testCase.minimumConceptHits };
+});
+const after = { candidate: sha(candidatePath), active: sha(path.join(root, 'models', 'lari', 'current', 'swarm-model.json')) };
+const report = { schemaVersion: 1, stage: 5, phase: 'developmental-baseline', createdAt: new Date().toISOString(), family: sealed.family, candidateBaseHash: baseHash, sealedAt: manifest.sealedAt, results, passedCount: results.filter(item=>item.passed).length, total: results.length, baselineFailure: results.filter(item=>item.passed).length === 0, readOnly: JSON.stringify(before) === JSON.stringify(after), before, after };
+fs.writeFileSync(outputPath, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' });
+process.stdout.write(`${JSON.stringify({ score: `${report.passedCount}/${report.total}`, baselineFailure: report.baselineFailure, readOnly: report.readOnly }, null, 2)}\n`);

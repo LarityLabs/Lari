@@ -1,0 +1,17 @@
+# Dependency and runtime-state excludes
+node_modules/
+
+# The model is the retained state (swarm-model.json, ~35MB, rewritten on every
+# learned turn). It is machine-local and does not belong in git history.
+# Place it at models/lari/current/swarm-model.json to run.
+models/
+
+# Consolidation workspaces, staging areas, and timestamped model backups.
+consolidation/
+*.backup-*.json
+
+# File-backed discourse-operator store (runtime state, recreated on demand).
+learned_discourse_operators.json
+
+*.log
+.DS_Store

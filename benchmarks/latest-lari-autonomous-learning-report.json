@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 2,
+  "createdAt": "2026-09-19T07:49:11.573Z",
+  "query": "tell me about yourself",
+  "risk": "low",
+  "status": "candidate_rejected",
+  "reason": "candidate validation errored",
+  "validationError": "Error: {\n  \"passed\": false,\n  \"gates\": {\n    \"hashExact\": true,\n    \"learnedRecordPresent\": true,\n    \"projectionsAreDerived\": true,\n    \"candidateStateIsSurgical\": true,\n    \"typedAbsenceFailsClosed\": true,\n    \"derivedProjectionsRebuild\": true,\n    \"learnedTransfer5of5\": false,\n    \"semanticStructureRetained\": false,\n    \"semanticCompositionGrounded\": true,\n    \"hiddenTransfer17of17\": true,\n    \"coreCorrectness5of5\": true,\n    \"zeroFamilyRegressions\": true,\n    \"cliParity\": false,\n    \"autonomousParity\": false,\n    \"reloadRetention\": true,\n    \"noExternalModelCalls\": true,\n    \"activeReadOnly\": true,\n    \"registryReadOnly\": true\n  },\n  \"learned\": \"4/5\",\n  \"hidden\": \"17/17\",\n  \"core\": \"5/5\",\n  \"regressions\": 0\n}\n\n    at runNode (/home/hatch/workspace/lari/lari-runtime/Lari for Muse/scripts/lari_auto_learn.js:33:34)\n    at autoLearnUnlocked (/home/hatch/workspace/lari/lari-runtime/Lari for Muse/scripts/lari_auto_learn.js:241:5)\n    at autoLearn (/home/hatch/workspace/lari/lari-runtime/Lari for Muse/scripts/lari_auto_learn.js:562:18)\n    at Object.<anonymous> (/home/hatch/workspace/lari/lari-runtime/Lari for Muse/scripts/lari_auto_learn.js:576:3)\n    at Module._compile (node:internal/modules/cjs/loader:1929:14)\n    at Object..js (node:internal/modules/cjs/loader:2060:10)\n    at Module.load (node:internal/modules/cjs/loader:1651:32)\n    at Module._load (node:internal/modules/cjs/loader:1443:12)\n    at wrapModuleLoad (node:internal/modules/cjs/loader:261:19)\n    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)",
+  "evidenceReused": false,
+  "candidate": {
+    "path": "consolidation/learning-candidates/f1b0905b942615142463e00490df5f7a478580eb63cbbfe5569d06f70d1e00e5.json",
+    "sha256": "f1b0905b942615142463e00490df5f7a478580eb63cbbfe5569d06f70d1e00e5",
+    "parentHash": "7f35a8aa07f2f74eb427d67cb16707e17284487c98d3a4895fc0a0612602377b",
+    "promoted": false
+  },
+  "validation": {
+    "passed": false,
+    "gates": {
+      "hashExact": true,
+      "learnedRecordPresent": true,
+      "projectionsAreDerived": true,
+      "candidateStateIsSurgical": true,
+      "typedAbsenceFailsClosed": true,
+      "derivedProjectionsRebuild": true,
+      "learnedTransfer5of5": false,
+      "semanticStructureRetained": false,
+      "semanticCompositionGrounded": true,
+      "hiddenTransfer17of17": true,
+      "coreCorrectness5of5": true,
+      "zeroFamilyRegressions": true,
+      "cliParity": false,
+      "autonomousParity": false,
+      "reloadRetention": true,
+      "noExternalModelCalls": true,
+      "activeReadOnly": true,
+      "registryReadOnly": true
+    }
+  },
+  "before": {
+    "active": "7f35a8aa07f2f74eb427d67cb16707e17284487c98d3a4895fc0a0612602377b",
+    "registry": "3e44e5607f9c8530d6bb5cbc980a0c187ac6ccf85e393fd83234d4df0be1efc1"
+  },
+  "after": {
+    "active": "7f35a8aa07f2f74eb427d67cb16707e17284487c98d3a4895fc0a0612602377b",
+    "registry": "3e44e5607f9c8530d6bb5cbc980a0c187ac6ccf85e393fd83234d4df0be1efc1"
+  },
+  "promoted": false,
+  "passed": false
+}

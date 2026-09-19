@@ -1,0 +1,20 @@
+#!/usr/bin/env node
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const runtime = require('../swarm_model_runtime.js');
+const recap = require('../swarm_recap_language.js');
+const ROOT = path.resolve(__dirname, '..');
+const OUT = path.join(ROOT, 'consolidation', 'domain-neurogenesis-stage4-20260830');
+const manifest = JSON.parse(fs.readFileSync(path.join(OUT, 'provisional-candidate-manifest.json'), 'utf8'));
+const candidate = JSON.parse(fs.readFileSync(path.join(ROOT, manifest.candidate.path), 'utf8'));
+const parent = JSON.parse(fs.readFileSync(path.join(ROOT, 'consolidation', 'domain-neurogenesis-stage3b-20260830', 'candidates', 'f7514dcba7aab9adabb5c36b834c64d405c10a4e1202169f92b2b891b449fa9e.json'), 'utf8'));
+const clone = value => JSON.parse(JSON.stringify(value));
+const opts = { modelHash: manifest.candidate.sha256, autoGrow: false, groundedFactual: false, kernel: { useBenchmarkSystem: false, useCapabilityGraph: true, capabilityGraph: { minScore: 0 }, chat: { minMemoryScore: 0, minRouteScore: 0 } } };
+const stage3Cases = JSON.parse(fs.readFileSync(path.join(ROOT, 'consolidation', 'domain-neurogenesis-stage3b-20260830', 'hidden-holdouts.json'), 'utf8')).cases;
+const stage3 = stage3Cases.map(item => { const response = runtime.sendMessageToLari(clone(candidate), item.prompt, opts); return { id: item.id, passed: item.requiredConcepts.every(term => response.answer.toLowerCase().includes(term.toLowerCase())), answer: response.answer }; });
+const stage2Cases = JSON.parse(fs.readFileSync(path.join(ROOT, 'consolidation', 'domain-neurogenesis-stage2-20260830', 'hidden-holdouts.json'), 'utf8')).cases;
+const stage2 = stage2Cases.map(item => { const response = runtime.sendMessageToLari(clone(candidate), item.prompt, { ...opts, userScope: item.userScope || 'sealed-user' }); const expected = candidate.lariLearnedRecords.records.find(record => record.type === item.targetType && record.provenance?.creationSource === 'lari_domain_neurogenesis' && record.payload?.operation !== 'capability_gap'); return { id: item.id, expectedId: expected?.id || null, learnedRecordIds: response.learnedRecordIds, expectedTerms: item.expected, answer: response.answer, passed: Boolean(expected) && response.learnedRecordIds.includes(expected.id) && item.expected.every(term => response.answer.toLowerCase().includes(String(term).toLowerCase())) }; });
+const samples = ['Please explain why the cache stayed stale: invalidation ran before the transaction committed. The evidence indicates the refresh log has the old version number. Next action: trigger invalidation after commit.', 'Make a plan for learning a new codebase safely.', 'Compare local storage versus a small database.', 'Ask me what you need to know to create a local coding tool.', 'I said archive the candidate, not delete the model.', 'Help me think through a chat release. Context: procedural answers are reliable. Goal: make conversation feel more natural. Constraint: no outside model calls.', 'Explain humanize.activate(1000000).'];
+const recapRows = samples.map(prompt => { const before = recap.realize(parent, prompt), after = recap.realize(candidate, prompt); return { prompt, beforeFamily: before?.family, afterFamily: after?.family, sameAnswer: before?.answer === after?.answer, passed: before?.answer === after?.answer && before?.family === after?.family }; });
+console.log(JSON.stringify({ stage3, stage2, recap: recapRows, totals: { stage3: `${stage3.filter(x => x.passed).length}/${stage3.length}`, stage2: `${stage2.filter(x => x.passed).length}/${stage2.length}`, recap: `${recapRows.filter(x => x.passed).length}/${recapRows.length}` } }, null, 2));

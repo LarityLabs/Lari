@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "kind": "lari.swebench.tool-only-remote-execution",
+  "architecture": {
+    "reasoner": "Lari",
+    "externalModelEndpoint": null,
+    "externalModelCalls": 0,
+    "rule": "Remote services execute commands and score patches only. They never select capabilities, author patches, repair answers, or teach Lari."
+  },
+  "patchAuthoring": {
+    "canonicalRuntimePath": "sendMessageToLari -> runLariUnifiedTaskKernel",
+    "workspaceContract": "isolated pinned Git checkout",
+    "predictionFormat": "SWE-bench JSONL",
+    "provenanceFormat": "Lari sidecar JSONL"
+  },
+  "executors": {
+    "swe_rex_modal": {
+      "kind": "tool_only_remote_shell",
+      "provider": "SWE-ReX ModalDeployment",
+      "enabledByDefault": false,
+      "modelEndpoint": null,
+      "externalModelCalls": 0,
+      "install": "python -m pip install 'swe-rex[modal]==1.4.0'",
+      "deployment": {
+        "type": "modal",
+        "image": "python:3.12",
+        "startup_timeout": 180,
+        "runtime_timeout": 3600,
+        "deployment_timeout": 7200,
+        "install_pipx": true
+      },
+      "allowedOperations": [
+        "clone pinned repository",
+        "read workspace files",
+        "write Lari-authored changes",
+        "run shell commands and tests",
+        "return stdout stderr exit code and files"
+      ],
+      "forbiddenOperations": [
+        "call an inference API",
+        "select a model",
+        "generate a patch",
+        "silently fall back to another agent"
+      ],
+      "requiredEnvironmentVariables": [
+        "MODAL_TOKEN_ID",
+        "MODAL_TOKEN_SECRET"
+      ]
+    },
+    "swebench_modal_evaluator": {
+      "kind": "tool_only_remote_evaluator",
+      "provider": "official SWE-bench harness on Modal",
+      "enabledByDefault": false,
+      "modelEndpoint": null,
+      "externalModelCalls": 0,
+      "install": "python -m pip install modal 'swebench[modal]'",
+      "commandTemplate": "python -m swebench.harness.run_evaluation --dataset_name princeton-nlp/SWE-bench_Verified --predictions_path <predictions.jsonl> --parallelism 10 --modal true"
+    },
+    "sb_cli_evaluator": {
+      "kind": "tool_only_remote_evaluator",
+      "provider": "official SWE-bench CLI service",
+      "enabledByDefault": false,
+      "modelEndpoint": null,
+      "externalModelCalls": 0,
+      "install": "python -m pip install sb-cli",
+      "authenticationCommand": "sb login",
+      "commandTemplate": "sb-cli submit swe-bench_verified dev --predictions_path <predictions.json> --run_id <run-id>",
+      "note": "Authentication and upload are manual explicit operator actions; this bridge never performs either."
+    }
+  },
+  "safety": {
+    "dispatchMode": "manual_explicit_only",
+    "credentialsEmbedded": false,
+    "bridgeMayAuthenticate": false,
+    "bridgeMayUpload": false,
+    "bridgeMayInvokeRemoteService": false,
+    "transportMayInvokeRemoteService": "only after an explicit --execute flag and validated Lari provenance"
+  },
+  "sources": [
+    "https://www.swebench.com/SWE-bench/guides/evaluation/",
+    "https://www.swebench.com/sb-cli/user-guide/submit/",
+    "https://swe-rex.com/latest/usage/",
+    "https://swe-rex.com/latest/api/deployments/config/"
+  ]
+}
