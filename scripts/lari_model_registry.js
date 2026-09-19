@@ -258,8 +258,21 @@ function checkpointLariModel(model) {
   validateLariModel(model);
   if (fs.existsSync(sourcePath)) {
     const dir = path.dirname(sourcePath);
-    const backupPath = path.join(dir, `${path.basename(sourcePath, '.json')}.backup-${Date.now()}.json`);
+    const base = path.basename(sourcePath, '.json');
+    const backupPath = path.join(dir, `${base}.backup-${Date.now()}.json`);
     fs.copyFileSync(sourcePath, backupPath);
+    // Keep only the newest few backups: each is a full model copy and an
+    // unbounded pile will fill small disks (seen on a 512MB /tmp tmpfs).
+    try {
+      const keep = Math.max(1, parseInt(process.env.LARI_CHECKPOINT_BACKUPS || '5', 10) || 5);
+      const olds = fs.readdirSync(dir)
+        .filter(f => f.startsWith(base + '.backup-') && f.endsWith('.json'))
+        .map(f => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs }))
+        .sort((a, b) => b.t - a.t);
+      for (const o of olds.slice(keep)) {
+        try { fs.unlinkSync(path.join(dir, o.f)); } catch (_) {}
+      }
+    } catch (_) {}
   }
   atomicWriteJson(sourcePath, normalizeLariModel(model));
   return sourcePath;

@@ -124,6 +124,24 @@ function createBridge(deps) {
     };
     const response = await runtime.sendMessageToLariAsync(entry.model, messageText, context);
     saveUserLari(entry.home.userId); // persist whatever the turn learned
+    // Transport-level turn log: feeds the discourse miner's audit trail and
+    // lets us inspect what the auto-induction loop is seeing per user.
+    try {
+      const logPath = path.join(entry.home.dir, 'turns.jsonl');
+      const record = {
+        ts: new Date().toISOString(),
+        chatType: extraContext.chatType || null,
+        userMessage: String(messageText || '').slice(0, 500),
+        lariAnswer: extractReplyText(response).slice(0, 500),
+        intent: response.intent || null,
+        confidence: typeof response.confidence === 'number' ? response.confidence : null,
+        signal: response.discourseMining ? response.discourseMining.signal : null,
+        induced: response.discourseMining && response.discourseMining.induced
+          ? { learned: !!response.discourseMining.induced.learned, verified: !!response.discourseMining.induced.verified }
+          : null
+      };
+      fs.appendFileSync(logPath, JSON.stringify(record) + '\n');
+    } catch (_) { /* logging never breaks chat */ }
     return extractReplyText(response);
   }
 

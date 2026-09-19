@@ -44,6 +44,7 @@ function attachSwarmModelRuntime(globalScope) {
   let nodeCapabilityDispatch = null;
   let nodeComputationalEnglishCapability = null;
   let nodeWordNetCapability = null;
+  let nodeDiscourseMiner = null;
   let nodeLanguageUnderstanding = null;
   let nodeRecapLanguage = null;
   let nodeDomainNeurogenesis = null;
@@ -54,6 +55,7 @@ function attachSwarmModelRuntime(globalScope) {
     try { nodeObservationAnswers = require('./swarm_observation_answers.js'); } catch (_) {}
     try { nodeComputationalEnglishCapability = require('./swarm_computational_english_capability.js'); } catch (_) {}
     try { nodeWordNetCapability = require('./swarm_wordnet_capability.js'); } catch (_) {}
+    try { nodeDiscourseMiner = require('./swarm_discourse_miner.js'); } catch (_) {}
   }
   if (typeof require === 'function') {
     try { nodeLanguageUnderstanding = require('./swarm_language_understanding.js'); } catch (_) {}
@@ -4206,12 +4208,25 @@ function attachSwarmModelRuntime(globalScope) {
     if (/^(?:hi|hey|hello|yo|sup|hiya|howdy)(?:\s+(?:there|lari|man|friend|buddy))?[!. ,]*(?:how\s+are\s+you|how\s+are\s+u|how\s+are\s+ya)?[?!. ,]*$/.test(trimmed)) return 'greeting';
     if (/^(?:good\s+(?:morning|afternoon|evening|night))(?:\s+lari)?[!. ,]*$/.test(trimmed)) return 'greeting';
     // Small talk: phatic check-ins, not information requests.
+    // "hey whats up" compounds a greeting with a phatic check-in; the anchored
+    // patterns above miss it, so match the compound explicitly and treat a
+    // short bare "whats up" as small talk too.
     if (/\bhow\s*(?:'s|s|is)\s+(?:it\s+going|going|things)\b/.test(text)
       || /\bhow\s+have\s+you\s+been\b/.test(text)
       || /\bhow\s+are\s+you\b/.test(text)
       || /^(?:what'?s|what\s+is)\s+up[?!. ,]*$/.test(trimmed)
+      || /^(?:hi|hey|hello|yo|sup|hiya|howdy)\b[\s!. ,]*what'?s up[?!. ,]*$/.test(trimmed)
+      || (/\bwhat'?s up\b/.test(text) && trimmed.split(/\s+/).length <= 4)
       || /\bwhat'?s\s+(?:new|good)\b/.test(text)
       || /\bhow\s+do\s+you\s+do\b/.test(text)) return 'small_talk';
+    // Self-identity: questions about Lari himself or what LARI stands for.
+    // Placed before the generic explanation/composition checks so "what is
+    // lari" is not misread as a knowledge question.
+    if (/\bwhat does (?:lari|it) stand for\b/.test(text)
+      || /\bwho (?:are you|created you|made you|built you|designed you)\b(?:\s+(?:really|exactly))?[?!. ,]*$/.test(trimmed)
+      || /\bwhat are you[?!. ,]*$/.test(trimmed)
+      || /\bwhat is lari[?!. ,]*$/.test(trimmed)
+      || /\btell me about yourself\b/.test(text)) return 'self_identity';
     // Goodbye.
     if (/^(?:bye|goodbye|see\s+(?:you|ya)(?:\s+later)?|later|goodnight|good\s+night|take\s+care)[!. ,]*$/.test(trimmed)) return 'goodbye';
     // Opinions and tastes: "do you like X", "what do you think about Y".
@@ -4321,6 +4336,39 @@ function attachSwarmModelRuntime(globalScope) {
     }
     return null;
   }
+
+  // Open-chat support: detect a vague request that names no concrete target
+  // ("check the thing for me") so the chat lane can ask one clarifying
+  // question instead of emitting the generic low-memory fallback.
+  function detectVagueChatRequest(message = '') {
+    const text = String(message || '').toLowerCase().replace(/[?!. ,;]+$/g, '');
+    const words = text.split(/\s+/).filter(Boolean);
+    if (words.length > 7 || words.length < 2) return null;
+    const stripped = words.map(word => word.replace(/^[\"“'']+|[\"”'']+$/g, ''));
+    const vagueNouns = ['thing', 'things', 'stuff', 'something', 'whatever'];
+    const vagueNoun = stripped.find(word => vagueNouns.includes(word)) || null;
+    const verbMatch = text.match(/\b(check|fix|look at|find|get|do|run|make|send|open|start|stop|update|change|tell)\b/);
+    const verb = verbMatch ? verbMatch[1] : null;
+    if (vagueNoun) {
+      return verb
+        ? `Which ${vagueNoun} do you want me to ${verb}?`
+        : `What ${vagueNoun} are you referring to?`;
+    }
+    if (words.length <= 4 && /\b(it|that|this)\b/.test(text)) {
+      return verb ? `What exactly do you want me to ${verb}?` : 'What are you referring to?';
+    }
+    return null;
+  }
+
+  // Varied honest deflections for open chat with no retained evidence and no
+  // routed procedure. Deterministic per message so the same prompt does not
+  // get a different answer every reload, but different prompts do not all
+  // collapse onto one identical line.
+  const OPEN_CHAT_DEFLECTIONS = [
+    'Not sure what you are after — give me a topic or a task and I will run with it.',
+    'I did not quite catch that. What do you want to talk about or work on?',
+    'That is a bit vague for me. Throw me a topic, a question, or something to do.'
+  ];
 
   function sentenceFromKnowledge(hit) {
     const item = hit?.item || {};
@@ -5281,7 +5329,7 @@ function attachSwarmModelRuntime(globalScope) {
 
     const conversationalIntent = ['greeting', 'small_talk', 'goodbye', 'opinion', 'personal', 'joke', 'preference',
       'follow_up', 'reaction_laugh', 'reaction_hype', 'reaction_damn', 'reaction_ack', 'reaction_shrug',
-      'mood_low', 'mood_high', 'mood_vent', 'thanks'].includes(intent);
+      'mood_low', 'mood_high', 'mood_vent', 'thanks', 'self_identity', 'open_chat'].includes(intent);
     const confidence = conversationalIntent ? 0.95 : adviceOnly ? 0.74 : clamp01(
       (relevantHits[0]?.score || 0) * 0.45 +
       (routeRelevant?.score || 0) * 0.35 +
@@ -5503,6 +5551,21 @@ function attachSwarmModelRuntime(globalScope) {
       } else {
         answer = 'I can remember that and use it in future answers.';
       }
+    } else if (intent === 'self_identity' && !evidence.length && !routeText) {
+      // No retained identity record matched; answer from stable self-knowledge.
+      answer = 'LARI stands for Local Autonomous Recursive Intelligence. I am Lari, pronounced "Larry" — a local AI built by Greg Betti. I run entirely on this machine, learn by retaining verified procedures, and never call an external model for my answers.';
+    } else if (intent === 'open_chat' && !evidence.length && !routeText) {
+      // Nothing retained matches and no procedure routed: acknowledge a blunt
+      // correction, ask one clarifying question when the request is vague,
+      // otherwise deflect honestly with varied phrasing instead of the
+      // identical low-memory line every turn.
+      const bluntRejection = /^(naw|nah|nope|wrong|incorrect)\b/i.test(String(message || '').trim());
+      if (bluntRejection) {
+        answer = 'Fair — that missed. What were you actually after?';
+      } else {
+        const clarification = detectVagueChatRequest(message);
+        answer = clarification || pickVariant(OPEN_CHAT_DEFLECTIONS, String(message));
+      }
     } else if (evidence.length || routeText) {
       const lead = intent === 'planning'
         ? 'Here is the practical path:'
@@ -5648,7 +5711,7 @@ function attachSwarmModelRuntime(globalScope) {
     // retained Titanic record via the word "up".
     const conversationalForRecap = ['greeting', 'small_talk', 'goodbye', 'opinion', 'personal', 'joke', 'preference',
       'follow_up', 'reaction_laugh', 'reaction_hype', 'reaction_damn', 'reaction_ack', 'reaction_shrug',
-      'mood_low', 'mood_high', 'mood_vent', 'thanks'].includes(intent);
+      'mood_low', 'mood_high', 'mood_vent', 'thanks', 'self_identity', 'open_chat'].includes(intent);
     const recap = conversationalForRecap ? null
       : preferredGroundedClaimRoute?.record?.payload?.responsePlan?.composition === 'grounded_research_claims'
       ? null
@@ -13654,7 +13717,7 @@ function attachSwarmModelRuntime(globalScope) {
 
   function isLariExplicitArithmeticPrompt(prompt = '') {
     const raw = String(prompt || '');
-    return /(?:calculate exactly|what is|solve)\s*:?\s*[-+*/().\d\s]+\??\.?$/i.test(raw)
+    return /(?:calculate exactly|what(?:['’]?s| is)|solve)\s*:?\s*[-+*/().\d\s]+\??\.?$/i.test(raw)
       || (/\d/.test(raw) && /\b(?:plus|minus|times|multiplied by|divided by)\b/i.test(raw));
   }
 
@@ -28357,6 +28420,7 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
           ]])),
         episodic: Object.fromEntries(Object.entries(model?.userModel?.episodicMemories || {})
           .map(([scope, list]) => [scope, (list || []).map(e => e.id)])),
+        beliefs: (model?.lariConsolidatedBeliefs?.beliefs || []).map(b => `${b.id}:${b.status || 'active'}`),
         codeSolutions: (model?.lariCodeGeneration?.solutions || []).map(s => s.taskId),
         codeLearningGoals: (model?.lariCodeGeneration?.learningGoals || []).map(g => g.taskId || g.description)
       };
@@ -28404,6 +28468,44 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
       }
     }
     return null;
+  }
+
+  // Discourse miner bindings: the miner module is pure; the runtime injects
+  // the closure functions it needs (induction, routing, language analysis).
+  function discourseMinerBindings() {
+    return {
+      induceFromFailures: (m, pairs, options) => {
+        try { return induceLariGeneralChatProcedureFromFailures(m, pairs, options); }
+        catch (_) { return { learned: false, reason: 'induction_threw' }; }
+      },
+      discourseGoalOf: (m, prompt) => {
+        try {
+          const a = nodeLanguageUnderstanding?.analyze
+            ? nodeLanguageUnderstanding.analyze(prompt, { learnedRecords: m?.lariLearnedRecords?.records || [] })
+            : null;
+          return a?.semantics?.discourse?.conversationalGoal || null;
+        } catch (_) { return null; }
+      },
+      classifyIntent: (prompt) => {
+        try { return classifyChatIntent(prompt); } catch (_) { return 'unknown'; }
+      },
+      routeProcedure: (m, prompt, intent) => {
+        try { return routeLariGeneralChatProcedure(m, prompt, intent, { languageUnderstanding: null }); }
+        catch (_) { return null; }
+      },
+      getEpisodes: (m, userScope) => {
+        try { return getEpisodicMemories(m, userScope); } catch (_) { return []; }
+      }
+    };
+  }
+
+  function topConsolidatedBeliefs(model, userScope = 'default', limit = 8) {
+    try {
+      if (nodeDiscourseMiner && typeof nodeDiscourseMiner.getTopBeliefs === 'function') {
+        return nodeDiscourseMiner.getTopBeliefs(model, userScope, limit);
+      }
+    } catch (_) {}
+    return [];
   }
 
   async function sendMessageToLariAsync(model, message = '', context = {}) {
@@ -28733,6 +28835,33 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
               induced: recorded.induced === true,
               external_model_calls: 0
             }];
+          }
+        }
+      }
+    } catch (_) {}
+    // Discourse miner (2026-09-19): every turn is evidence. Corrections mark
+    // failures, accepted recoveries become training pairs, three pairs in one
+    // discourse cluster auto-induce a chat procedure, and per-intent
+    // correction rates calibrate confidence. Observation only — the answer
+    // above is already final.
+    try {
+      if (nodeDiscourseMiner && typeof nodeDiscourseMiner.noteTurn === 'function') {
+        const mined = nodeDiscourseMiner.noteTurn(model, {
+          userMessage: promptText,
+          lariAnswer: String(response.answer || ''),
+          confidence: typeof response.confidence === 'number' ? response.confidence : null,
+          intent: response.intent || null,
+          userScope: response.userScope || 'default'
+        }, discourseMinerBindings());
+        if (mined) {
+          response.discourseMining = {
+            signal: mined.signal,
+            cues: mined.cues || [],
+            induced: mined.induced && mined.induced.attempted ? mined.induced : null,
+            pairCount: mined.pairCount
+          };
+          if (typeof mined.confidenceCalibrated === 'number') {
+            response.confidenceCalibrated = mined.confidenceCalibrated;
           }
         }
       }
@@ -29943,6 +30072,15 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
         output = `I remember to ${profileParts.join(', ')}.`;
         applied.push(...preferences.filter(item => ['name', 'tone', 'focus'].includes(item.key) || /^correction_/.test(item.key)), ...professional, ...personal);
       }
+      // Consolidated beliefs: durable distilled memory (nightly consolidation).
+      try {
+        const scope = preferenceContext.userScope || 'default';
+        const beliefs = topConsolidatedBeliefs(model, scope, 5).filter(b => b && b.type !== 'self_knowledge');
+        const beliefTexts = beliefs.map(b => b.text).filter(Boolean);
+        if (beliefTexts.length) {
+          output = `${output} I also remember that ${beliefTexts.join('; ')}.`;
+        }
+      } catch (_) {}
     }
 
     if ((professionalRole || professionalStack || professionalGoal) && /\b(work|professional|career|project|code|coding|engineering|business)\b/i.test(prompt) && !/what do you remember/i.test(prompt)) {
@@ -32863,7 +33001,7 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
       try {
         return ['greeting', 'small_talk', 'goodbye', 'opinion', 'personal', 'joke', 'preference',
       'follow_up', 'reaction_laugh', 'reaction_hype', 'reaction_damn', 'reaction_ack', 'reaction_shrug',
-      'mood_low', 'mood_high', 'mood_vent', 'thanks'].includes(classifyChatIntent(originalPrompt));
+      'mood_low', 'mood_high', 'mood_vent', 'thanks', 'self_identity', 'open_chat'].includes(classifyChatIntent(originalPrompt));
       } catch (_) { return false; }
     })();
     const recapExecution = conversationalForKernelRecap ? null
@@ -33767,7 +33905,7 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
         try {
           return ['greeting', 'small_talk', 'goodbye', 'opinion', 'personal', 'joke', 'preference',
       'follow_up', 'reaction_laugh', 'reaction_hype', 'reaction_damn', 'reaction_ack', 'reaction_shrug',
-      'mood_low', 'mood_high', 'mood_vent', 'thanks'].includes(classifyChatIntent(prompt));
+      'mood_low', 'mood_high', 'mood_vent', 'thanks', 'self_identity', 'open_chat'].includes(classifyChatIntent(prompt));
         } catch (_) { return false; }
       })();
       if (!isConversationalFallback && /^I don[’']t have a reliable answer for that yet\./i.test(String(result?.answer || ''))) {
@@ -37845,7 +37983,26 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     return report;
   }
 
-  const api = { infer, reinforce, predictNext, selectTool, frameAnswerSatisfied, learnFromToolObservation, needsTeaching, ingestKnowledge, learnFromRepair, retrainSkillFromFailure, recordTaskOutcome, runExperienceReplay, proposeAgent, registerAgent, learnUserPreference, getUserPreferences, applyUserPreferences, createLearningGoal, approveLearningGoal, rejectLearningGoal, runApprovedLearningJobs, findCuriosityGap, completeLearningGoal, planAutonomousKnowledgeAcquisition, scoreEvidenceSources, extractEvidenceClaims, analyzeSourceAgreement, distillEvidenceToKnowledge, updateExistingKnowledge, buildKnowledgeAcquisitionAudit, runAutonomousKnowledgeAcquisition, inferResearchQuestionsFromGoal, runResearchActionOperator, embedText, embedTextForModel, cosineSimilarity, learnConceptGraph, searchKnowledge, consolidateMemory, calibrateConfidence, planCurriculum, compileSkills, routeCompiledSkill, evaluateAgentFitness, specializeAgents, arbitrateAgentRoute, synthesizeToolAdapter, repairSynthesizedToolAdapter, findReusableSynthesizedTool, evolveSynthesizedTools, runSwarmMission, rankCompiledSkills, composeCompiledSkills, autoComposeSkills, evaluateCompiledSkills, pruneCompiledSkills, runSkillArena, promoteCompiledSkillToAgent, runGrowthTick, runTrainingEpoch, runAutonomousTrainingLoop, scoreTrainingHoldouts, runCheckpointedAutonomousTraining, runLongHorizonGrowthLoop, runContinualLearningCycle, runDomainExpansionCycle, runSelfDirectedExpansionCycle, planAutonomousModelGrowthRoadmap, runAutonomousModelGrowthLoop, runAutonomousModelRoadmapCycles, runAutonomousModelRoadmapPolicyArena, runAutonomousModelGrowthGovernor, runAutonomousModelGrowthGovernorLoop, runAutonomousModelInferenceKernel, runAutonomousModelConversationKernel, runHtmlSwarmModel, runHtmlSwarmModelBatch, extractLariTaskFocus, runLariModel, runLariModelBatch, buildLariModelCard, planLariCapabilityGrowth, selectLariCapabilityGrowthExecutor, synthesizeLariCapabilityGrowthExecutor, repairLariCapabilityGrowthExecutor, promoteLariCapabilityGrowthExecutor, executeLariCapabilityGrowthStrategy, runLariCapabilityGrowthCycle, runLariInstructionFollowingGrowthCycle, synthesizeLariInstructionFollowingAnswer, runLariMathReasoningGrowthCycle, synthesizeLariMathReasoningAnswer, registerLariModalityLane, synthesizeLariModalityGenerator, renderLariImageArtifact, renderLariGameArtifact, renderLariAudioArtifact, evaluateLariModalityArtifact, runLariModalityGrowthCycle, inferLariVisualPromptFeatures, synthesizeLariNativeImageGenerator, renderLariNativeImageArtifact, evaluateLariNativeImageArtifact, repairLariNativeImageGenerator, runLariNativeImageGenerationCore, renderLariUnifiedImageArtifact, evaluateLariUnifiedImageArtifact, runLariUnifiedImageModel, synthesizeLariPhotorealTextureGenerator, renderLariPhotorealTextureArtifact, evaluateLariPhotorealTextureArtifact, createLariVisualSpecialistSwarm, renderLariVisualSpecialistSwarmArtifact, evaluateLariVisualSpecialistSwarmArtifact, repairLariVisualSpecialistSwarm, runLariVisualSpecialistSwarmCycle, generateLariVisualSwarmArenaCandidates, scoreLariVisualSwarmArenaCandidate, runLariVisualSwarmArena, synthesizeLariVisualResearchGenerator, renderLariMapped3DArtifact, evaluateLariVisualResearchArtifact, repairLariVisualResearchGenerator, runLariVisualSelfTeachingCycle, planLariAutonomousResearchTargets, runLariResearchCandidateArena, composeLariMultimodalProduct, evaluateLariMultimodalProduct, repairLariMultimodalProduct, planLariProductGapGrowthTargets, runLariProductGapGrowthClosure, runLariProductFromGrowthMemory, runLariAutonomousProductBuilder, runLariAutonomousProductBuilderBatch, inferLariMultimodalProductRequest, seedLariPromotedMultimodalGenerators, writeLariMultimodalProductWorkspace, runLariAutonomousMultimodalProductCreation, classifyLariUnifiedTaskIntent, classifyLariUnifiedTaskSubintent, registerLariUnifiedTaskSubintent, resolveLariUnifiedTaskSubintent, proposeLariUnifiedTaskSubintentSpec, runLariAutonomousSubintentGrowthCycle, analyzeLariUnifiedKernelGrowthGaps, runLariSelfDirectedSubintentGrowthLoop, runLariLocalModelLaunchLoop, getLariSessionStatus, shouldRunLariSessionGrowth, sendMessageToLari, sendMessageToLariAsync, runLariSessionOperator, runLariAutonomousRequest, classifyLariAutonomousRequest, runLariAutonomousGrowthDaemon, planLariAutonomousGrowthDaemonMissions, scoreLariAutonomousGrowthDaemonState, compileLariSessionOperatorSkills, routeLariSessionOperatorSkill, runLariOperatorSkillArena, runLariAutonomousOperatorLearningLoop, buildLariCapabilityGraph, routeLariCapabilityGraph, buildLariCapabilityGenome, routeLariCapabilityGenome, composeLariCapabilityGenome, evaluateLariCapabilityGenome, composeLariCapabilityGraph, runLariCapabilityProductOperator, inferLariWorkspaceMissionTasks, runLariAutonomousWorkspaceMission, inferLariProjectWorkspacePlan, runLariProjectWorkspaceCreation, runLariProjectBuildReviewRepairLoop, runLariProjectInteractiveValidationLoop, inferLariInteractiveValidationBreadthPlan, runLariProjectInteractiveValidationBreadthCycle, inferLariVisualUiQualityCriticPlan, scoreLariVisualUiQualityEvidence, runLariVisualUiQualityCriticCycle, inferLariNativeCapabilityRetentionPlan, runLariNativeCapabilityRetentionCycle, inferLariFailureRepairMemoryPlan, runLariFailureRepairMemoryCycle, runLariSelfLearningAgendaExecutor, inferLariBackendProjectPlan, runLariBackendApiProjectCreation, inferLariDependencyProjectPlan, runLariDependencyInstallAndPackageCheck, inferLariSelfLearningAgenda, runLariSessionConversation, selectLariUnifiedKernelActivePolicy, runLariUnifiedTaskKernel, runLariUnifiedTaskKernelBatch, reinforceLariUnifiedKernelActivePolicies, scoreLariUnifiedKernelPolicyState, runLariUnifiedKernelPolicyEvolutionLoop, planLariUnifiedKernelSelfImprovement, runLariUnifiedKernelSelfImprovementCycle, runLariUnifiedKernelSelfImprovementLoop, scoreLariUnifiedKernelCoverage, runCheckpointedLariUnifiedKernelSelfImprovementLoop, distillLariUnifiedKernelPolicies, applyLariUnifiedKernelPolicy, runPolicyGuidedLariUnifiedKernelSelfImprovementCycle, generateLariUnifiedKernelPolicyCandidates, runLariUnifiedKernelPolicyArena, runGeneralChat, evaluateGeneralChat, runGeneralChatTrainingCycle, evaluateGeneralIntelligence, runGeneralIntelligenceTrainingCycle, runChatOperatorDecision, executeChatOperatorDecision, evaluateChatOperator, evaluateChatOperatorExecution, executeChatOperatorWithRepair, evaluateChatOperatorRepair, buildChatOperatorTaskGraph, executeChatOperatorTaskGraph, evaluateChatOperatorTaskGraph, promoteTaskGraphToSkill, routeTaskGraphSkill, executeTaskGraphSkill, scoreGraphRun, evolveTaskGraphSkill, runChatOperatorTrainingCycle, defaultFrontierLanguageRegistry, resolveFrontierLanguageRegistry, registerFrontierLanguageLane, synthesizeFrontierLanguageLane, inferFrontierLanguageLaneSpecFromWorkspace, detectFrontierLanguage, classifyFrontierReplacementMode, discoverFrontierWorkspace, inferFrontierReplacementMissionSteps, runFrontierReplacementCycle, runFrontierCodingRepairLoop, runFrontierPatchStrategyArena, evolveFrontierPatchStrategy, classifyChatIntent, runKernelCycle, runSelfPlayTraining, defaultInputsForEvent };
+  const api = { infer, reinforce, predictNext, selectTool, frameAnswerSatisfied, learnFromToolObservation, needsTeaching, ingestKnowledge, learnFromRepair, retrainSkillFromFailure, recordTaskOutcome, runExperienceReplay, proposeAgent, registerAgent, learnUserPreference, getUserPreferences, applyUserPreferences, createLearningGoal, approveLearningGoal, rejectLearningGoal, runApprovedLearningJobs, findCuriosityGap, completeLearningGoal, planAutonomousKnowledgeAcquisition, scoreEvidenceSources, extractEvidenceClaims, analyzeSourceAgreement, distillEvidenceToKnowledge, updateExistingKnowledge, buildKnowledgeAcquisitionAudit, runAutonomousKnowledgeAcquisition, inferResearchQuestionsFromGoal, runResearchActionOperator, embedText, embedTextForModel, cosineSimilarity, learnConceptGraph, searchKnowledge, consolidateMemory, calibrateConfidence, planCurriculum, compileSkills, routeCompiledSkill, evaluateAgentFitness, specializeAgents, arbitrateAgentRoute, synthesizeToolAdapter, repairSynthesizedToolAdapter, findReusableSynthesizedTool, evolveSynthesizedTools, runSwarmMission, rankCompiledSkills, composeCompiledSkills, autoComposeSkills, evaluateCompiledSkills, pruneCompiledSkills, runSkillArena, promoteCompiledSkillToAgent, runGrowthTick, runTrainingEpoch, runAutonomousTrainingLoop, scoreTrainingHoldouts, runCheckpointedAutonomousTraining, runLongHorizonGrowthLoop, runContinualLearningCycle, runDomainExpansionCycle, runSelfDirectedExpansionCycle, planAutonomousModelGrowthRoadmap, runAutonomousModelGrowthLoop, runAutonomousModelRoadmapCycles, runAutonomousModelRoadmapPolicyArena, runAutonomousModelGrowthGovernor, runAutonomousModelGrowthGovernorLoop, runAutonomousModelInferenceKernel, runAutonomousModelConversationKernel, runHtmlSwarmModel, runHtmlSwarmModelBatch, extractLariTaskFocus, runLariModel, runLariModelBatch, buildLariModelCard, planLariCapabilityGrowth, selectLariCapabilityGrowthExecutor, synthesizeLariCapabilityGrowthExecutor, repairLariCapabilityGrowthExecutor, promoteLariCapabilityGrowthExecutor, executeLariCapabilityGrowthStrategy, runLariCapabilityGrowthCycle, runLariInstructionFollowingGrowthCycle, synthesizeLariInstructionFollowingAnswer, runLariMathReasoningGrowthCycle, synthesizeLariMathReasoningAnswer, registerLariModalityLane, synthesizeLariModalityGenerator, renderLariImageArtifact, renderLariGameArtifact, renderLariAudioArtifact, evaluateLariModalityArtifact, runLariModalityGrowthCycle, inferLariVisualPromptFeatures, synthesizeLariNativeImageGenerator, renderLariNativeImageArtifact, evaluateLariNativeImageArtifact, repairLariNativeImageGenerator, runLariNativeImageGenerationCore, renderLariUnifiedImageArtifact, evaluateLariUnifiedImageArtifact, runLariUnifiedImageModel, synthesizeLariPhotorealTextureGenerator, renderLariPhotorealTextureArtifact, evaluateLariPhotorealTextureArtifact, createLariVisualSpecialistSwarm, renderLariVisualSpecialistSwarmArtifact, evaluateLariVisualSpecialistSwarmArtifact, repairLariVisualSpecialistSwarm, runLariVisualSpecialistSwarmCycle, generateLariVisualSwarmArenaCandidates, scoreLariVisualSwarmArenaCandidate, runLariVisualSwarmArena, synthesizeLariVisualResearchGenerator, renderLariMapped3DArtifact, evaluateLariVisualResearchArtifact, repairLariVisualResearchGenerator, runLariVisualSelfTeachingCycle, planLariAutonomousResearchTargets, runLariResearchCandidateArena, composeLariMultimodalProduct, evaluateLariMultimodalProduct, repairLariMultimodalProduct, planLariProductGapGrowthTargets, runLariProductGapGrowthClosure, runLariProductFromGrowthMemory, runLariAutonomousProductBuilder, runLariAutonomousProductBuilderBatch, inferLariMultimodalProductRequest, seedLariPromotedMultimodalGenerators, writeLariMultimodalProductWorkspace, runLariAutonomousMultimodalProductCreation, classifyLariUnifiedTaskIntent, classifyLariUnifiedTaskSubintent, registerLariUnifiedTaskSubintent, resolveLariUnifiedTaskSubintent, proposeLariUnifiedTaskSubintentSpec, runLariAutonomousSubintentGrowthCycle, analyzeLariUnifiedKernelGrowthGaps, runLariSelfDirectedSubintentGrowthLoop, runLariLocalModelLaunchLoop, getLariSessionStatus, shouldRunLariSessionGrowth, sendMessageToLari, sendMessageToLariAsync, noteConversationTurn: (model, turn) => {
+      try {
+        return nodeDiscourseMiner
+          ? nodeDiscourseMiner.noteTurn(model, turn || {}, discourseMinerBindings())
+          : { signal: 'neutral', cues: [], pairCount: 0 };
+      } catch (_) { return { signal: 'neutral', cues: [], pairCount: 0 }; }
+    }, consolidateUserMemory: (model, userScope, options) => {
+      try {
+        return nodeDiscourseMiner
+          ? nodeDiscourseMiner.consolidateUserMemory(model, userScope || 'default', {
+              ...(options || {}),
+              getEpisodes: discourseMinerBindings().getEpisodes
+            })
+          : { scope: userScope || 'default', episodesSeen: 0, newBeliefs: 0 };
+      } catch (_) { return { scope: userScope || 'default', episodesSeen: 0, newBeliefs: 0 }; }
+    }, getTopConsolidatedBeliefs: (model, userScope, limit) => topConsolidatedBeliefs(model, userScope, limit),
+    discourseCalibrationSummary: (model) => {
+      try { return nodeDiscourseMiner ? nodeDiscourseMiner.calibrationSummary(model) : []; }
+      catch (_) { return []; }
+    }, runLariSessionOperator, runLariAutonomousRequest, classifyLariAutonomousRequest, runLariAutonomousGrowthDaemon, planLariAutonomousGrowthDaemonMissions, scoreLariAutonomousGrowthDaemonState, compileLariSessionOperatorSkills, routeLariSessionOperatorSkill, runLariOperatorSkillArena, runLariAutonomousOperatorLearningLoop, buildLariCapabilityGraph, routeLariCapabilityGraph, buildLariCapabilityGenome, routeLariCapabilityGenome, composeLariCapabilityGenome, evaluateLariCapabilityGenome, composeLariCapabilityGraph, runLariCapabilityProductOperator, inferLariWorkspaceMissionTasks, runLariAutonomousWorkspaceMission, inferLariProjectWorkspacePlan, runLariProjectWorkspaceCreation, runLariProjectBuildReviewRepairLoop, runLariProjectInteractiveValidationLoop, inferLariInteractiveValidationBreadthPlan, runLariProjectInteractiveValidationBreadthCycle, inferLariVisualUiQualityCriticPlan, scoreLariVisualUiQualityEvidence, runLariVisualUiQualityCriticCycle, inferLariNativeCapabilityRetentionPlan, runLariNativeCapabilityRetentionCycle, inferLariFailureRepairMemoryPlan, runLariFailureRepairMemoryCycle, runLariSelfLearningAgendaExecutor, inferLariBackendProjectPlan, runLariBackendApiProjectCreation, inferLariDependencyProjectPlan, runLariDependencyInstallAndPackageCheck, inferLariSelfLearningAgenda, runLariSessionConversation, selectLariUnifiedKernelActivePolicy, runLariUnifiedTaskKernel, runLariUnifiedTaskKernelBatch, reinforceLariUnifiedKernelActivePolicies, scoreLariUnifiedKernelPolicyState, runLariUnifiedKernelPolicyEvolutionLoop, planLariUnifiedKernelSelfImprovement, runLariUnifiedKernelSelfImprovementCycle, runLariUnifiedKernelSelfImprovementLoop, scoreLariUnifiedKernelCoverage, runCheckpointedLariUnifiedKernelSelfImprovementLoop, distillLariUnifiedKernelPolicies, applyLariUnifiedKernelPolicy, runPolicyGuidedLariUnifiedKernelSelfImprovementCycle, generateLariUnifiedKernelPolicyCandidates, runLariUnifiedKernelPolicyArena, runGeneralChat, evaluateGeneralChat, runGeneralChatTrainingCycle, evaluateGeneralIntelligence, runGeneralIntelligenceTrainingCycle, runChatOperatorDecision, executeChatOperatorDecision, evaluateChatOperator, evaluateChatOperatorExecution, executeChatOperatorWithRepair, evaluateChatOperatorRepair, buildChatOperatorTaskGraph, executeChatOperatorTaskGraph, evaluateChatOperatorTaskGraph, promoteTaskGraphToSkill, routeTaskGraphSkill, executeTaskGraphSkill, scoreGraphRun, evolveTaskGraphSkill, runChatOperatorTrainingCycle, defaultFrontierLanguageRegistry, resolveFrontierLanguageRegistry, registerFrontierLanguageLane, synthesizeFrontierLanguageLane, inferFrontierLanguageLaneSpecFromWorkspace, detectFrontierLanguage, classifyFrontierReplacementMode, discoverFrontierWorkspace, inferFrontierReplacementMissionSteps, runFrontierReplacementCycle, runFrontierCodingRepairLoop, runFrontierPatchStrategyArena, evolveFrontierPatchStrategy, classifyChatIntent, runKernelCycle, runSelfPlayTraining, defaultInputsForEvent };
   api.canonicalLariKnowledgeRecords = canonicalLariKnowledgeRecords;
   api.synthesizeGroundedSemanticClaimProgram = synthesizeGroundedSemanticClaimProgram;
   api.consolidateGroundedClaimLearning = consolidateGroundedClaimLearning;

@@ -78,3 +78,50 @@ journalctl -u lari-telegram -f   # watch it come alive
 - New users start from your base model: they inherit your skills AND your
   learned knowledge snapshot. Their future learning is their own.
 - Group replies are labeled (`Greg's Lari: ...`) since one bot speaks for N Laris.
+
+## Nightly memory consolidation (systemd timer)
+
+The discourse miner learns *during* chat (corrections -> training pairs ->
+auto-induced chat procedures, per-intent calibration). Once a night, a
+separate job distills each user's episodic memories into durable beliefs:
+
+```bash
+# /etc/systemd/system/lari-consolidation.service
+[Unit]
+Description=Lari nightly memory consolidation
+After=network.target
+
+[Service]
+Type=oneshot
+User=lari
+Environment=LARI_TELEGRAM_ROOT=/srv/lari/lari-telegram/users-root
+ExecStart=/usr/bin/node /srv/lari/lari-telegram/runtime/scripts/run_lari_consolidation.js
+```
+
+```bash
+# /etc/systemd/system/lari-consolidation.timer
+[Unit]
+Description=Run Lari consolidation nightly
+
+[Timer]
+OnCalendar=*-*-* 04:10:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now lari-consolidation.timer
+```
+
+Notes:
+- Each user's beliefs live in their own `model.json`
+  (`lariConsolidatedBeliefs`) — owner-only learning is preserved.
+- The script keeps the last 7 consolidation backups per user
+  (`model.json.consolidation-<ts>.bak`); older ones are pruned.
+- The script prints a JSON report; point the timer's output at a log file if
+  you want history (`StandardOutput=append:/var/log/lari-consolidation.log`).
+- Until the Dell cutover, the same script runs from a scheduled job against
+  the temporary root (`/tmp/lari-live`).
