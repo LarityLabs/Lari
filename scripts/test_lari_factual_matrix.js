@@ -3,8 +3,20 @@
 // Broader factual-chat probe matrix (fail-before / pass-after).
 // Categories: definitions, dates, people, quantities, historical-vs-current,
 // unsupported/ambiguous (should fail closed), plus identity regression.
+const fs = require('fs');
+const path = require('path');
 const runtime = require('../swarm_model_runtime');
 const registry = require('./lari_model_registry.js');
+
+// Isolated model copy: the matrix does live research, which checkpoints.
+// Never let it write to the canonical model file.
+const ROOT = path.resolve(__dirname, '..');
+const TEST_BASE = path.join(ROOT, '..', 'tmp');
+fs.mkdirSync(TEST_BASE, { recursive: true });
+const TEST_DIR = fs.mkdtempSync(path.join(TEST_BASE, 'lari-matrix-test-'));
+const TEST_MODEL = path.join(TEST_DIR, 'swarm-model.json');
+fs.copyFileSync(path.join(ROOT, 'models', 'lari', 'current', 'swarm-model.json'), TEST_MODEL);
+process.env.LARI_MODEL_PATH = TEST_MODEL;
 
 const loaded = registry.loadLariModel({});
 const model = loaded.model;

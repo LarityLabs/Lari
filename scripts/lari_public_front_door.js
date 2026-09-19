@@ -407,6 +407,13 @@ function isUnacceptableFallback(prompt = '', answer = '') {
 }
 
 function wikipediaTopic(prompt = '') {
+  // A parsed factual frame yields the clean subject directly ("who was Albert
+  // Einstein" -> "Albert Einstein"). Never send the interrogative sentence to
+  // the encyclopedia title endpoint.
+  try {
+    const frame = externalTools.parseFactualFrame ? externalTools.parseFactualFrame(prompt) : null;
+    if (frame && frame.frame !== 'unknown' && frame.subject) return frame.subject;
+  } catch (_) { /* fall through to the legacy patterns */ }
   const capital = String(prompt).match(/capital of\s+([A-Za-z .'-]+)/i);
   if (capital) return capital[1].replace(/[?.!]+$/, '').trim();
   const explicitResearch = String(prompt).match(/\b(?:research(?:\s+and\s+learn)?|learn|study|look\s+up|find\s+out)(?:\s+(?:about|the\s+topic\s+of))?\s+(.+?)(?:[?.!]|$)/i);
@@ -531,7 +538,31 @@ async function lookupWikidataAttribute(prompt = '', attribute = '', property = '
 
 function formatGroundedKnowledge(prompt = '', knowledge = {}) {
   if (!knowledge?.summary || !knowledge?.sourceUrl) return null;
+  const escapeFramePattern = value => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let frame = null;
+  try { frame = externalTools.parseFactualFrame ? externalTools.parseFactualFrame(prompt) : null; } catch (_) {}
   let answer = '';
+  // Frame-aware answer extraction: pull the sentence that actually answers the
+  // question's frame instead of echoing the article's first paragraph.
+  if (frame && frame.frame !== 'unknown' && frame.subject) {
+    const frameSentences = String(knowledge.summary || '').split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(Boolean);
+    const subjectPattern = new RegExp(`\\b${escapeFramePattern(frame.subject)}\\b`, 'i');
+    if (frame.frame === 'person' || frame.frame === 'definition') {
+      const definitional = frameSentences.find(sentence => subjectPattern.test(sentence) && /\b(was|is|were|are)\s+(a|an|the)\b/i.test(sentence));
+      if (definitional) answer = `${definitional} Source: ${knowledge.sourceUrl}`;
+    } else if (frame.frame === 'event_date') {
+      const dated = frameSentences.find(sentence => subjectPattern.test(sentence) && /\b(1[0-9]{3}|20[0-2][0-9])\b/.test(sentence));
+      if (dated) answer = `${dated} Source: ${knowledge.sourceUrl}`;
+    } else if (frame.frame === 'quantity') {
+      const counted = frameSentences.find(sentence => subjectPattern.test(sentence)
+        && (/\b\d[\d,]*\b/.test(sentence) || /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen|hundred|thousand|million|billion)\b/i.test(sentence)));
+      if (counted) answer = `${counted} Source: ${knowledge.sourceUrl}`;
+    } else if (frame.frame === 'office_holder' && frame.office) {
+      const officePattern = new RegExp(`\\b${escapeFramePattern(frame.office)}\\b`, 'i');
+      const held = frameSentences.find(sentence => subjectPattern.test(sentence) && officePattern.test(sentence));
+      if (held) answer = `${held} Source: ${knowledge.sourceUrl}`;
+    }
+  }
   if (/capital of/i.test(prompt)) {
     const capitalMatch = knowledge.summary.match(/(?:capital (?:and largest city )?is|capital is|capital,?\s+)([A-Z][A-Za-z .'-]{1,40})/i)
       || knowledge.summary.match(/([A-Z][A-Za-z .'-]{1,40}) is (?:the )?(?:nation(?:'s)?|country(?:'s)?) capital/i);
@@ -602,6 +633,19 @@ async function groundedFactualEvidence(prompt = '', options = {}) {
   }
   const topic = wikipediaTopic(prompt);
   if (!topic) return null;
+  // Event-date and office-holder questions: try the event/office's own
+  // article ("Fall of the Berlin Wall", "President of France") before the
+  // subject article -- its lead states the date/holder crisply.
+  try {
+    const frame = externalTools.parseFactualFrame ? externalTools.parseFactualFrame(prompt) : null;
+    const nominalTopic = frame && (frame.eventNominal || frame.officeNominal);
+    if (nominalTopic && nominalTopic !== topic) {
+      const nominalKnowledge = await externalTools.resolveKnowledge(nominalTopic, { timeoutMs: options.timeoutMs || 5000 });
+      if (nominalKnowledge && knowledgeMatchesTopic(nominalTopic, nominalKnowledge)) {
+        return formatGroundedKnowledge(prompt, nominalKnowledge);
+      }
+    }
+  } catch (_) { /* fall through to the subject article */ }
   try {
     let knowledge;
     try {

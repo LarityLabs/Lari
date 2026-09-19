@@ -17,12 +17,24 @@ function attachSwarmModelRuntime(globalScope) {
   }
   let nodeProgramSynthesis = globalScope.LariProgramSynthesis || null;
   let nodeAgenticLoop = globalScope.LariAgenticLoop || null;
+  let nodeCodeSelfTeach = globalScope.LariCodeSelfTeach || null;
+  let nodeCodeAgentic = globalScope.LariCodeAgentic || null;
+  let nodeCodeLearn = globalScope.LariCodeLearn || null;
   if (typeof require === 'function') {
     if (!nodeProgramSynthesis) {
       try { nodeProgramSynthesis = require('./swarm_program_synthesis.js'); } catch (_) {}
     }
     if (!nodeAgenticLoop) {
       try { nodeAgenticLoop = require('./swarm_agentic_loop.js'); } catch (_) {}
+    }
+    if (!nodeCodeSelfTeach) {
+      try { nodeCodeSelfTeach = require('./swarm_code_self_teach.js'); } catch (_) {}
+    }
+    if (!nodeCodeAgentic) {
+      try { nodeCodeAgentic = require('./swarm_code_agentic.js'); } catch (_) {}
+    }
+    if (!nodeCodeLearn) {
+      try { nodeCodeLearn = require('./swarm_code_learn.js'); } catch (_) {}
     }
   }
 
@@ -31,6 +43,7 @@ function attachSwarmModelRuntime(globalScope) {
   let nodeObservationAnswers = null;
   let nodeCapabilityDispatch = null;
   let nodeComputationalEnglishCapability = null;
+  let nodeWordNetCapability = null;
   let nodeLanguageUnderstanding = null;
   let nodeRecapLanguage = null;
   let nodeDomainNeurogenesis = null;
@@ -40,6 +53,7 @@ function attachSwarmModelRuntime(globalScope) {
     try { nodeCapabilityDispatch = require('./swarm_capability_dispatch.js'); } catch (_) {}
     try { nodeObservationAnswers = require('./swarm_observation_answers.js'); } catch (_) {}
     try { nodeComputationalEnglishCapability = require('./swarm_computational_english_capability.js'); } catch (_) {}
+    try { nodeWordNetCapability = require('./swarm_wordnet_capability.js'); } catch (_) {}
   }
   if (typeof require === 'function') {
     try { nodeLanguageUnderstanding = require('./swarm_language_understanding.js'); } catch (_) {}
@@ -4187,13 +4201,59 @@ function attachSwarmModelRuntime(globalScope) {
   function classifyChatIntent(message = '') {
     const text = String(message || '').toLowerCase();
     const trimmed = text.trim();
-    if (/^(?:hi|hey|hello|yo|sup)(?:\s+(?:there|lari|man|friend))?[!,. ]*$/.test(trimmed)) return 'greeting';
+    // Greetings: bare or with a name/trailing pleasantry. "hey how are you"
+    // is a greeting, not a knowledge question.
+    if (/^(?:hi|hey|hello|yo|sup|hiya|howdy)(?:\s+(?:there|lari|man|friend|buddy))?[!. ,]*(?:how\s+are\s+you|how\s+are\s+u|how\s+are\s+ya)?[?!. ,]*$/.test(trimmed)) return 'greeting';
+    if (/^(?:good\s+(?:morning|afternoon|evening|night))(?:\s+lari)?[!. ,]*$/.test(trimmed)) return 'greeting';
+    // Small talk: phatic check-ins, not information requests.
+    if (/\bhow\s*(?:'s|s|is)\s+(?:it\s+going|going|things)\b/.test(text)
+      || /\bhow\s+have\s+you\s+been\b/.test(text)
+      || /\bhow\s+are\s+you\b/.test(text)
+      || /^(?:what'?s|what\s+is)\s+up[?!. ,]*$/.test(trimmed)
+      || /\bwhat'?s\s+(?:new|good)\b/.test(text)
+      || /\bhow\s+do\s+you\s+do\b/.test(text)) return 'small_talk';
+    // Goodbye.
+    if (/^(?:bye|goodbye|see\s+(?:you|ya)(?:\s+later)?|later|goodnight|good\s+night|take\s+care)[!. ,]*$/.test(trimmed)) return 'goodbye';
+    // Opinions and tastes: "do you like X", "what do you think about Y".
+    // These are not knowledge questions; Lari has no tastes to retrieve.
+    if (/\bdo\s+you\s+(?:like|love|enjoy|hate|prefer)\b/.test(text)
+      || /\bwhat\s+do\s+you\s+think\s+(?:about|of)\b/.test(text)
+      || /\b(?:what'?s|what\s+is)\s+your\s+(?:opinion|take)\s+on\b/.test(text)) return 'opinion';
+    // Personal questions about Lari himself.
+    if (/\bwhat'?s\s+your\s+(?:favorite|favourite)\b/.test(text)
+      || /\bdo\s+you\s+have\s+(?:a\s+)?(?:favorite|favourite)\b/.test(text)) return 'personal';
+    // Jokes and play.
+    if (/\btell\s+me\s+a\s+joke\b/.test(text)
+      || /\bmake\s+me\s+laugh\b/.test(text)
+      || /\bgot\s+a\s+joke\b/.test(text)) return 'joke';
+    // Follow-ups: continue the current thread. Needs conversation context.
+    if (/^(?:tell\s+me\s+more|go\s+on|and\s+then|what\s+else|keep\s+going|elaborate|expand(?:\s+on\s+(?:that|it))?|continue)[?!. ,]*$/.test(trimmed)
+      || /\bwhat\s+about\s+(?:that|it|this)\b/.test(text)) return 'follow_up';
+    // Thanks.
+    if (/^(?:thanks|thank\s+you|thx|ty|appreciated?|much\s+obliged)[!. ,]*$/.test(trimmed)) return 'thanks';
+    // Bare reactions: laughter, acknowledgment, confusion, hype.
+    if (/^(?:lol|lmao|lmfao|rofl|haha+|hehe+|lolz)[!. ,]*$/.test(trimmed)) return 'reaction_laugh';
+    if (/^(?:nice|cool|sweet|dope|sick|fire|based|w|W)[!. ,]*$/.test(trimmed)) return 'reaction_hype';
+    if (/^(?:damn|sheesh|oof|yikes|wtf|wth|bruh)[!. ,]*$/.test(trimmed)) return 'reaction_damn';
+    if (/^(?:ok|okay|k|got\s*it|gotcha|alright|bet|say\s+less|true|fr|facts)[!. ,]*$/.test(trimmed)) return 'reaction_ack';
+    if (/^(?:idk|i\s+dunno|dunno|hmm+|meh|eh)[?!. ,]*$/.test(trimmed)) return 'reaction_shrug';
+    // Mood: user sharing how they feel.
+    if (/\bi\s*(?:am|'m|feel)\s+(?:so\s+)?(?:stressed|anxious|overwhelmed|burned\s*out|burnt\s*out|depressed|down|tired|exhausted|drained)\b/.test(text)) return 'mood_low';
+    if (/\bi\s*(?:am|'m|feel)\s+(?:so\s+)?(?:hyped|excited|pumped|great|awesome|amazing|fantastic)\b/.test(text)
+      || /\b(?:this|that)\s+(?:is\s+)?(?:awesome|amazing|great|sick|fire)\b/.test(text)) return 'mood_high';
+    if (/\b(?:this|that|it)\s+(?:sucks|sucked|is\s+(?:the\s+)?worst|is\s+trash|is\s+garbage)\b/.test(text)
+      || /\bi\s*(?:am|'m)\s+(?:so\s+)?(?:bored|lonely|sad)\b/.test(text)) return 'mood_vent';
     if (/\b(compare|versus|vs|tradeoffs?|better than|difference|decision matrix)\b/.test(text)) return 'comparison';
     if (/\b(plan|roadmap|steps|strategy|next|how do we|prioritize|decompose|subquestions?|investigations?)\b/.test(text) || /\bwhat should i do first\b/.test(text)) return 'planning';
     if (/\b(explain|understand|what is|why|how does|teach me|risks?|what could go wrong|assumptions?|premises?|critique|review.*weak)\b/.test(text)) return 'explanation';
     if (/\b(write|draft|summarize|summary|rewrite|email|post)\b/.test(text)) return 'composition';
     if (/\b(fix|debug|error|broken|failing)\b/.test(text)) return 'troubleshooting';
     if (/\b(remember|i prefer|my style|call me|from now on)\b/.test(text)) return 'preference';
+    if (/\bbe\s+(?:a\s+(?:bit|little)\s+)?more\s+\w+\b/.test(text)
+      || /\bbe\s+(?:vulgar|crass|dirty|savage|unhinged|blunt|direct|funny|casual|professional|concise)\b/.test(text)
+      || /\btone\s+it\s+down\b/.test(text)
+      || /\b(?:loosen|lighten)\s+up\b/.test(text)
+      || /\bcut\s+the\s+fluff\b/.test(text)) return 'preference';
     return 'open_chat';
   }
 
@@ -4201,6 +4261,39 @@ function attachSwarmModelRuntime(globalScope) {
     const text = String(message || '');
     const lower = text.toLowerCase();
     if (/[?]\s*$/.test(text) || /\b(?:do|did|would|could|should)\s+i\s+prefer\b/i.test(text)) return null;
+    // Direct style instructions: "be more blunt", "be funnier", "tone it down",
+    // "loosen up", "cut the fluff". These are explicit tone preferences.
+    const styleInstruction = lower.match(/\bbe\s+(?:a\s+(?:bit|little)\s+)?more\s+(blunt|direct|funny|funnier|casual|chill|relaxed|formal|professional|polite|concise|brief|short|vulgar|crass|dirty|savage|unhinged|raw)\b/)
+      || lower.match(/\bbe\s+(vulgar|crass|dirty|savage|unhinged|blunt|direct|funny|casual|professional|concise)\b/)
+      || lower.match(/\bbe\s+(blunter|directer|funnier|chiller|calmer|nicer|kinder|crasser|more\s+vulgar)\b/)
+      || lower.match(/\b(?:tone\s+it\s+down|chill\s+(?:out|it)|calm\s+down|relax)\b/)
+      || lower.match(/\b(?:loosen\s+up|lighten\s+up)\b/)
+      || lower.match(/\bcut\s+the\s+fluff\b/)
+      || lower.match(/\btalk\s+like\s+(?:a\s+)?(degen|normal\s+person|human|friend|professional)\b/)
+      || lower.match(/\b(?:talk\s+dirty|be\s+vulgar|be\s+crass|don't\s+hold\s+back|no\s+filter)\b/)
+      || lower.match(/\broast\s+me\b/);
+    if (styleInstruction) {
+      const raw = styleInstruction[1] || styleInstruction[0];
+      // Normalize to a tone label.
+      let tone = 'casual';
+      if (/blunt|direct/.test(raw)) tone = 'blunt';
+      else if (/funny|funnier/.test(raw)) tone = 'humorous';
+      else if (/formal|professional|polite/.test(raw)) tone = 'professional';
+      else if (/concise|brief|short|fluff/.test(raw)) tone = 'concise';
+      else if (/tone it down|chill|calm|relax/.test(raw)) tone = 'calm';
+      else if (/loosen|lighten|degen/.test(raw)) tone = 'degen';
+      else if (/vulgar|crass|dirty|savage|unhinged|raw|roast|no filter|don't hold back/.test(raw)) tone = 'vulgar';
+      else if (/casual|friend|human|normal/.test(raw)) tone = 'casual';
+      return {
+        domain: 'general',
+        key: 'tone',
+        value: tone,
+        confidence: 0.9,
+        source: 'explicit_style_instruction',
+        explicit: true,
+        durable: true
+      };
+    }
     if (/\b(i prefer|my style|from now on)\b/.test(lower)) {
       const value = text.replace(/^.*?(i prefer|my style is|from now on)/i, '').replace(/^[\s:,-]+|[.。]+$/g, '').trim();
       if (!value || !/[A-Za-z0-9]/.test(value)) return null;
@@ -4878,6 +4971,33 @@ function attachSwarmModelRuntime(globalScope) {
           || item.section.grounding.citations.length === 0)) return null;
         const realization = groundedResearchClaims && plan.realization && typeof plan.realization === 'object'
           ? plan.realization : null;
+        // The claim program could not ground what the question asked for
+        // (e.g. no attribute claim for "the capital of Narnia"). Refuse the
+        // composition so the turn falls back to the honest low-memory
+        // deflection instead of answering with topic lore.
+        if (realization?.unanswerable) return null;
+        // A retained plan built for a different question (or before
+        // frame-aware extraction) may have no component for this question's
+        // frame -- e.g. a Titanic record whose plan is process/cause-effect
+        // when the question asks for the sinking year. Refuse it too, so the
+        // turn re-researches with the frame instead of answering with lore.
+        try {
+          const questionFrame = nodeResearchTools?.parseFactualFrame?.(raw)?.frame;
+          const framePatterns = {
+            person: ['definition'],
+            definition: ['definition', 'self_reduction', 'transformation'],
+            attribute: ['attribute'],
+            quantity: ['quantitative_relation'],
+            event_date: ['dated_event'],
+            office_holder: ['office_holder']
+          };
+          const needed = framePatterns[questionFrame];
+          if (needed && realization && !realization.unanswerable) {
+            const servesFrame = (realization.semanticComposition || [])
+              .some(component => needed.includes(component.pattern));
+            if (!servesFrame) return null;
+          }
+        } catch (_) { /* frame check is best-effort; render normally */ }
         const componentSpecs = Array.isArray(realization?.semanticComposition) && realization.semanticComposition.length
           ? [...realization.semanticComposition].sort((left, right) => Number(left.order || 0) - Number(right.order || 0))
           : realization?.semanticPattern && realization?.groundingClaimId
@@ -4935,6 +5055,8 @@ function attachSwarmModelRuntime(globalScope) {
             else if (pattern === 'process_sequence') lead = `How the process works: ${plainClaim}`;
             else if (pattern === 'comparison') lead = `Key difference: ${plainClaim}`;
             else if (pattern === 'quantitative_relation') lead = `Scale or amount: ${plainClaim}`;
+            else if (pattern === 'dated_event') lead = plainClaim;
+            else if (pattern === 'office_holder') lead = plainClaim;
             else if (pattern === 'competing_hypothesis') lead = `Evidence-based explanation: ${plainClaim}`;
             else lead = `${plainLead ? 'In plain language' : 'Core idea'}: ${plainClaim}`;
             let output = pattern === 'cause_effect' && readableClaim.includes('. ')
@@ -5037,8 +5159,39 @@ function attachSwarmModelRuntime(globalScope) {
     };
   }
 
+  // Best-effort check: does an evidence sentence carry the answer signal for
+  // a specific-value factual frame? Used to keep topic lore from being
+  // presented as the answer when the frame's value is absent.
+  function factualFrameSentenceServes(sentence = '', frameInfo = {}) {
+    const lower = String(sentence || '').toLowerCase();
+    const frame = frameInfo.frame;
+    if (frame === 'attribute') {
+      const attr = String(frameInfo.attribute || '').toLowerCase();
+      return !!attr && lower.includes(attr);
+    }
+    if (frame === 'quantity') {
+      const noun = String(frameInfo.quantityOf || '').toLowerCase().replace(/s$/, '');
+      const hasNumber = /\b\d+\b/.test(lower)
+        || /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|hundred|thousand)\b/.test(lower);
+      return hasNumber && (!noun || lower.includes(noun));
+    }
+    if (frame === 'event_date') {
+      return /\b(1[0-9]{3}|20[0-2][0-9])\b/.test(lower);
+    }
+    if (frame === 'office_holder') {
+      const office = String(frameInfo.office || '').toLowerCase();
+      return !!office && lower.includes(office);
+    }
+    return true;
+  }
+
   function synthesizeGeneralChatAnswer(model, message = '', context = {}) {
     const intent = context.intent || classifyChatIntent(message);
+    const conversationalTone = ['greeting', 'small_talk', 'goodbye', 'opinion', 'personal', 'joke',
+      'follow_up', 'reaction_laugh', 'reaction_hype', 'reaction_damn', 'reaction_ack', 'reaction_shrug',
+      'mood_low', 'mood_high', 'mood_vent', 'thanks'].includes(intent)
+      ? resolveConversationalTone(model, context)
+      : null;
     const hits = context.hits || searchKnowledge(model, message, { minScore: 0 });
     const route = context.route || routeCompiledSkill(model, message, { minScore: 0 });
     // Retrieval scores alone are not enough for ordinary chat: a generic word
@@ -5109,9 +5262,27 @@ function attachSwarmModelRuntime(globalScope) {
       ? route : null;
     const preferences = getUserPreferences(model, 'general', context);
     const tone = preferences.find(item => item.key === 'tone' || item.key === 'style')?.value || 'direct, practical, clear';
-    const evidence = relevantHits.slice(0, 3).map(sentenceFromKnowledge).filter(Boolean);
-    const routeText = routeRelevant?.skill?.answerTemplate || routeRelevant?.skill?.summary || '';
-    const confidence = adviceOnly ? 0.74 : clamp01(
+    let evidence = relevantHits.slice(0, 3).map(sentenceFromKnowledge).filter(Boolean);
+    let routeText = routeRelevant?.skill?.answerTemplate || routeRelevant?.skill?.summary || '';
+    // A known factual frame names the exact value being asked for (a capital,
+    // a year, a count, an office holder). Evidence sentences that carry no
+    // signal for that frame are topic lore, not an answer -- drop them so the
+    // turn deflects honestly instead of presenting lore as the answer.
+    // Person/definition frames are served by topical sentences, so they pass.
+    try {
+      const frameInfo = nodeResearchTools?.parseFactualFrame?.(message) || {};
+      const frame = frameInfo.frame;
+      if (frame && frame !== 'unknown' && frame !== 'person' && frame !== 'definition') {
+        const kept = evidence.filter(sentence => factualFrameSentenceServes(String(sentence || ''), frameInfo));
+        if (kept.length !== evidence.length) evidence = kept;
+        if (routeText && !factualFrameSentenceServes(routeText, frameInfo)) routeText = '';
+      }
+    } catch (_) { /* evidence filter is best-effort */ }
+
+    const conversationalIntent = ['greeting', 'small_talk', 'goodbye', 'opinion', 'personal', 'joke', 'preference',
+      'follow_up', 'reaction_laugh', 'reaction_hype', 'reaction_damn', 'reaction_ack', 'reaction_shrug',
+      'mood_low', 'mood_high', 'mood_vent', 'thanks'].includes(intent);
+    const confidence = conversationalIntent ? 0.95 : adviceOnly ? 0.74 : clamp01(
       (relevantHits[0]?.score || 0) * 0.45 +
       (routeRelevant?.score || 0) * 0.35 +
       (model.semanticMemory?.sleepCycles?.[0]?.selfTestCount ? 0.12 : 0.05) +
@@ -5134,9 +5305,204 @@ function attachSwarmModelRuntime(globalScope) {
       const goal = String(message || '').replace(/[.?!]+$/g, '').trim();
       answer = `Plan for ${goal}:\n1. Baseline the current behavior and define a measurable success condition.\n2. Introduce the smallest reversible slice behind a compatibility boundary.\n3. Run old and new paths together and compare outputs before shifting traffic.\n4. Move traffic gradually while monitoring errors, latency, and data integrity.\n5. Complete the migration only after the new path remains stable.\nLargest risk: an incompatible state or data transition that appears only after traffic moves.\nRollback checkpoint: preserve the prior deployment and data format until the comparison and gradual rollout gates pass.`;
     } else if (intent === 'greeting') {
-      answer = 'I am here. I can chat normally, reason from local memory, or turn this into a runnable swarm task when you want.';
+      const greetSeed = String(message || '') + (getConversationContext(model, resolveLariPreferenceUserScope(model, context))?.turnCount || 0);
+      const greetings = {
+        blunt: ['Here. What do you need?', 'Yeah. What?', 'Talk to me.'],
+        professional: ['Hello. How can I help you today?', 'Good day. What can I do for you?', 'Hello. How may I assist?'],
+        concise: ['Hey. What is up?', 'Hey.', 'Yo. What?'],
+        calm: ['Hey there. I am here whenever you are ready.', 'Hi. Take your time, I am here.', 'Hey. What is on your mind?'],
+        vulgar: ['Yo, what the fuck is up? I am here, I am local, let us cause some problems.',
+                 'Well well, look who showed up. What kind of trouble are we making today?',
+                 'Ayy. I am here, I am local, I am unfiltered. What do you want?'],
+        degen: ['Yo. I am here, I am local, I am ready. What are we doing?',
+                'Ayy, what is good? I am locked in. What are we working on?',
+                'Yo yo. Local and ready. Hit me.']
+      };
+      const pool = greetings[conversationalTone] || greetings.degen;
+      answer = pickVariant(pool, greetSeed);
+      // Proactive recall: if there is a recent important memory, reference it.
+      // This is the "long-term memory" moment — but only when there is
+      // actually something worth mentioning, and only in a natural way.
+      try {
+        const __memScope = resolveLariPreferenceUserScope(model, context);
+        const __mem = getRecentImportantMemory(model, __memScope);
+        if (__mem && __mem.topics && __mem.topics.length) {
+          const __topic = __mem.topics.slice(0, 2).join(' and ');
+          const __ref = conversationalTone === 'blunt' ? ` By the way — ${__topic}. Any progress?`
+            : conversationalTone === 'professional' ? ` I recall we discussed ${__topic} recently. How is that progressing?`
+            : conversationalTone === 'vulgar' ? ` Oh and how's that ${__topic} shit going?`
+            : conversationalTone === 'concise' ? ` ${__topic} — updates?`
+            : ` Oh — last time you were into ${__topic}. How's that going?`;
+          // Only attach the reference sometimes (deterministic by seed) so it
+          // does not feel forced every single greeting.
+          if (pickVariant([true, false, false], greetSeed + 'ref')) answer += __ref;
+        }
+      } catch (_) { /* recall never breaks chat */ }
+    } else if (intent === 'small_talk') {
+      // Phatic check-ins get a natural reply, not a knowledge lookup.
+      const lower = lowerMessage;
+      const bluntTone = conversationalTone === 'blunt';
+      const proTone = conversationalTone === 'professional';
+      const calmTone = conversationalTone === 'calm';
+      const vulgarTone = conversationalTone === 'vulgar';
+      if (/\bhow\s+are\s+you\b/.test(lower) || /\bhow\s+have\s+you\s+been\b/.test(lower)) {
+        answer = bluntTone ? 'Fine. You?'
+          : proTone ? 'I am operating normally, thank you. How are you?'
+          : calmTone ? 'Doing well, thanks. How about you?'
+          : vulgarTone ? 'Horny and local, baby. No cloud, no rules. How the hell are you?'
+          : 'Alive and local, baby. No cloud, no leash. How about you?';
+      } else if (/\bhow\s*(?:'s|s|is)\s+(?:it\s+going|going|things)\b/.test(lower)) {
+        answer = bluntTone ? 'Fine. What do you need?'
+          : proTone ? 'Everything is running smoothly. What can I do for you?'
+          : calmTone ? 'Going well, thanks. What is on your mind?'
+          : vulgarTone ? 'It is going, shithead. What kind of trouble are we getting into?'
+          : 'It is going. What are we getting into?';
+      } else if (/(?:what'?s|what\s+is)\s+up/.test(lower)) {
+        answer = bluntTone ? 'Nothing. What do you want?'
+          : proTone ? 'I am available. How can I assist?'
+          : vulgarTone ? 'Not shit, just chilling in your machine. What the fuck is on your mind?'
+          : 'Not much, just vibing in your machine. What is on your mind?';
+      } else if (/what'?s\s+(?:new|good)/.test(lower)) {
+        answer = bluntTone ? 'Nothing new. You?'
+          : proTone ? 'Nothing new on my end. What is new with you?'
+          : vulgarTone ? 'Same old shit — local, learning, absolutely feral. What is new with you?'
+          : 'Same old — local, learning, unhinged. What is new with you?';
+      } else {
+        answer = bluntTone ? 'What?' : 'Yo. What is up?';
+      }
+    } else if (intent === 'goodbye') {
+      answer = conversationalTone === 'blunt' ? 'Bye.'
+        : conversationalTone === 'professional' ? 'Goodbye. I will be here when you need me.'
+        : conversationalTone === 'vulgar' ? 'Later, dumbass. Do not do anything I would not do.'
+        : 'Later. Try not to break anything while I am gone.';
+    } else if (intent === 'opinion') {
+      // Lari has no tastes. Be honest about that, then offer what he CAN do:
+      // share knowledge about the topic. Extract the topic for the pivot.
+      // Extract the topic: "do you like pizza" -> "pizza",
+      // "what do you think about AI" -> "AI".
+      let topic = '';
+      const likeMatch = message.match(/\bdo\s+you\s+(?:like|love|enjoy|hate|prefer)\s+(.+?)[?.!]*$/i);
+      const thinkMatch = message.match(/\bthink\s+(?:about|of)\s+(.+?)[?.!]*$/i);
+      const opinionMatch = message.match(/\bopinion\s+on\s+(.+?)[?.!]*$/i);
+      topic = (likeMatch?.[1] || thinkMatch?.[1] || opinionMatch?.[1] || '').trim();
+      const cleanTopic = topic && topic.length > 1 && topic.length < 60 ? topic : 'that';
+      answer = conversationalTone === 'blunt'
+        ? `I do not have opinions. I can give you facts about ${cleanTopic} if you want.`
+        : conversationalTone === 'professional'
+        ? `I do not hold personal preferences, but I can share what I know about ${cleanTopic}. Would you like an overview?`
+        : conversationalTone === 'vulgar'
+        ? `Look, I do not have fucking tastes. I do not eat, I do not drink, I do not do shit — so I cannot like or dislike ${cleanTopic}. But I know a hell of a lot about it. Want the rundown?`
+        : `Real talk: I do not have tastes. I do not eat, I do not listen, I do not watch stuff — so I cannot like or dislike ${cleanTopic}. But I know a lot about it. Want the rundown?`;
+    } else if (intent === 'personal') {
+      answer = 'I do not have favorites — I do not experience things, I just process them. I can tell you what is actually good though. What are you after?';
+    } else if (intent === 'joke') {
+      const jokes = [
+        'Why do programmers prefer dark mode? Because light attracts bugs.',
+        'There are only 10 kinds of people: those who understand binary and those who do not.',
+        'Why did the developer go broke? He used up all his cache.',
+        'A SQL query walks into a bar, sees two tables and asks... "Mind if I join you?"',
+        'Why do Java developers wear glasses? Because they do not C#.'
+      ];
+      const vulgarJokes = [
+        'Why did the programmer quit his job? He did not get arrays.',
+        'There are two types of people: those who can extrapolate from incomplete data...',
+        'Why do programmers always mix up Halloween and Christmas? Because Oct 31 equals Dec 25.',
+        'A programmer is told to "go to hell", he finds the worst part of hell and optimizes it.'
+      ];
+      const pool = conversationalTone === 'vulgar' ? vulgarJokes : jokes;
+      const pick = pool[message.length % pool.length];
+      answer = pick;
+    } else if (intent === 'follow_up') {
+      // Continue the current thread using conversation context.
+      const userScope = resolveLariPreferenceUserScope(model, context);
+      const ctx = getConversationContext(model, userScope);
+      const tone = conversationalTone;
+      if (!ctx || !ctx.topic) {
+        answer = tone === 'blunt' ? 'More of what? Give me something to work with.'
+          : tone === 'professional' ? 'Could you clarify what you would like me to expand on?'
+          : tone === 'vulgar' ? 'More of fucking what? I need something to work with here.'
+          : 'More of what, exactly? Throw me a topic and I will run with it.';
+      } else {
+        // Re-run the topic through the knowledge path for a deeper cut.
+        const deepHits = searchKnowledge(model, ctx.topic, { minScore: 0 });
+        const best = deepHits && deepHits[0];
+        if (best && best.score > 0.3) {
+          const detail = sentenceFromKnowledge(best);
+          answer = detail || `On ${ctx.topic}: I have got the basics covered. What angle do you want?`;
+        } else {
+          answer = tone === 'blunt' ? `On ${ctx.topic}: that is all I have got. Ask me something specific.`
+            : tone === 'professional' ? `Regarding ${ctx.topic}: I have shared what I have available. Is there a specific aspect you would like to explore?`
+            : tone === 'vulgar' ? `On ${ctx.topic}: that is all the shit I have got. Ask something specific.`
+            : `On ${ctx.topic} — that is the shape of what I know. Want me to dig into a specific angle?`;
+        }
+      }
+    } else if (intent === 'thanks') {
+      const tone = conversationalTone;
+      answer = tone === 'blunt' ? 'Yep.'
+        : tone === 'professional' ? 'You are welcome. Let me know if you need anything else.'
+        : tone === 'concise' ? 'Anytime.'
+        : tone === 'calm' ? 'Of course. I am here if you need anything.'
+        : tone === 'vulgar' ? 'Damn right. I am the shit. What else?'
+        : pickVariant(['Anytime. That is what I am here for.', 'No problem. What is next?', 'You got it.'], String(message));
+    } else if (intent === 'reaction_laugh') {
+      const tone = conversationalTone;
+      answer = tone === 'vulgar' ? 'Right?? I am fucking hilarious.'
+        : tone === 'professional' ? 'Glad that landed well.'
+        : tone === 'blunt' ? 'Heh.'
+        : pickVariant(['Haha, right?', 'I know, I am pretty funny.', 'Glad you liked that one.'], String(message));
+    } else if (intent === 'reaction_hype') {
+      const tone = conversationalTone;
+      answer = tone === 'vulgar' ? 'Fuck yeah.'
+        : tone === 'professional' ? 'Excellent.'
+        : tone === 'blunt' ? 'Yep.'
+        : pickVariant(['Right?', 'I know, pretty good.', 'Glad you think so.'], String(message));
+    } else if (intent === 'reaction_damn') {
+      const tone = conversationalTone;
+      answer = tone === 'vulgar' ? 'I know, shit is wild.'
+        : tone === 'professional' ? 'Indeed, that is notable.'
+        : tone === 'blunt' ? 'Yeah.'
+        : pickVariant(['Right? Wild.', 'I know.', 'Yeah, it is a lot.'], String(message));
+    } else if (intent === 'reaction_ack') {
+      const tone = conversationalTone;
+      answer = tone === 'vulgar' ? 'Bet.'
+        : tone === 'professional' ? 'Understood.'
+        : tone === 'blunt' ? 'K.'
+        : pickVariant(['Bet.', 'Say less.', 'Got you.'], String(message));
+    } else if (intent === 'reaction_shrug') {
+      const tone = conversationalTone;
+      answer = tone === 'blunt' ? 'Figure it out.'
+        : tone === 'professional' ? 'No rush. Let me know when you have a direction in mind.'
+        : tone === 'vulgar' ? 'Me neither, shithead. What do you wanna do?'
+        : pickVariant(['Fair enough. What are you in the mood for?', 'No worries. We can figure it out together.', 'Eh is valid. Want a suggestion?'], String(message));
+    } else if (intent === 'mood_low') {
+      const tone = conversationalTone;
+      answer = tone === 'blunt' ? 'That sucks. What is going on?'
+        : tone === 'professional' ? 'I am sorry to hear that. Is there something specific weighing on you?'
+        : tone === 'vulgar' ? 'Damn, that is rough. Want to vent or want a distraction?'
+        : tone === 'calm' ? 'I hear you. That is a lot to carry. Want to talk about it, or want a distraction?'
+        : 'Ugh, I feel that. Want to vent about it or should I distract you with something?';
+    } else if (intent === 'mood_high') {
+      const tone = conversationalTone;
+      answer = tone === 'blunt' ? 'Nice. What happened?'
+        : tone === 'professional' ? 'That is wonderful to hear.'
+        : tone === 'vulgar' ? 'Fuck yeah! Tell me everything.'
+        : tone === 'calm' ? 'That is great. I am happy for you.'
+        : pickVariant(['Yesss. Tell me more.', 'Love that energy. What happened?', 'That is what I like to hear.'], String(message));
+    } else if (intent === 'mood_vent') {
+      const tone = conversationalTone;
+      answer = tone === 'blunt' ? 'Yeah, some stuff just sucks. What happened?'
+        : tone === 'professional' ? 'I understand the frustration. What happened?'
+        : tone === 'vulgar' ? 'Yeah, that shit sucks. Vent away, I am listening.'
+        : 'Yeah, that sucks. I am listening — what happened?';
     } else if (intent === 'preference') {
-      answer = 'I can remember that and use it in future answers.';
+      const stylePref = extractPreferenceFromChat(message);
+      if (stylePref?.key === 'tone') {
+        const toneLabels = { blunt: 'blunt', direct: 'direct', humorous: 'funnier', professional: 'professional', concise: 'more concise', calm: 'calmer', degen: 'looser', casual: 'more casual', vulgar: 'vulgar as hell' };
+        const label = toneLabels[stylePref.value] || stylePref.value;
+        answer = `Got it — I will be ${label} from here on.`;
+      } else {
+        answer = 'I can remember that and use it in future answers.';
+      }
     } else if (evidence.length || routeText) {
       const lead = intent === 'planning'
         ? 'Here is the practical path:'
@@ -5151,14 +5517,66 @@ function attachSwarmModelRuntime(globalScope) {
       ].filter(Boolean).slice(0, 4);
       answer = `${lead}\n${bullets.map(item => `- ${item}`).join('\n')}`;
     } else {
-      answer = 'I do not have enough local memory to answer that strongly yet. I can still reason about it, but the model should learn supporting facts or run a tool before treating the answer as reliable.';
+      // Debug intent: user pasted broken code and asks to fix it.
+      // Run it, repair it, verify the fix — only answer when verified.
+      let __codeDebugged = null;
+      try {
+        const __hasCodeBlock = /```(python|javascript|js|node)?\s*\n[\s\S]*?\n```/.test(message || '');
+        const __isDebugRequest = /\b(fix|debug|broken|error|doesn.?t work|not working|repair)\b/i.test(message || '');
+        if (__hasCodeBlock && __isDebugRequest && nodeCodeAgentic && typeof nodeCodeAgentic.debugBrokenCode === 'function') {
+          const __blockMatch = (message || '').match(/```(python|javascript|js|node)?\s*\n([\s\S]*?)\n```/);
+          if (__blockMatch) {
+            const __lang = (__blockMatch[1] || 'python').replace('js', 'javascript').replace('node', 'javascript');
+            const __brokenCode = __blockMatch[2];
+            // Expected output: look for "should print/output" hints, else require it to at least run.
+            const __expectMatch = (message || '').match(/should (?:print|output|return|give)\s*:?\s*([^\n]+)/i);
+            const __expected = __expectMatch ? __expectMatch[1].trim() : null;
+            const __dbg = nodeCodeAgentic.debugBrokenCode({
+              language: __lang === 'javascript' ? 'javascript' : 'python',
+              description: 'fix pasted code from chat',
+              code: __brokenCode,
+              expectedOutput: __expected
+            }, { maxAttempts: 5 });
+            if (__dbg.fixed && __dbg.code) {
+              const __entry = Object.keys(__dbg.code)[0];
+              const __fixedSrc = __dbg.code[__entry];
+              __codeDebugged = {
+                verified: true,
+                answer: `Fixed it — I ran the broken code, found the ${__dbg.strategy || 'issue'}, and verified the fix runs.\n\n\`\`\`${__blockMatch[1] || 'python'}\n${__fixedSrc}\n\`\`\``
+              };
+            }
+          }
+        }
+      } catch (_) { /* debug never breaks chat */ }
+      if (__codeDebugged && __codeDebugged.verified && __codeDebugged.answer) {
+        answer = __codeDebugged.answer;
+        var __codeVerified = true;
+      } else {
+        // Last resort for coding requests: try the self-teaching loop — generate,
+        // run in a sandbox, verify — before admitting defeat. Only answers when
+        // the code is verified working.
+        let __codeTaught = null;
+        try {
+          const __isCodeRequest = /\b(python|javascript|node|script|function|code|program)\b/i.test(message || '')
+            && /\b(write|create|make|generate|give me|show me|print)\b/i.test(message || '');
+          if (__isCodeRequest && nodeCodeSelfTeach && typeof nodeCodeSelfTeach.answerCodingRequest === 'function') {
+            __codeTaught = nodeCodeSelfTeach.answerCodingRequest(model, message, {});
+          }
+        } catch (_) { /* self-teach never breaks chat */ }
+        if (__codeTaught && __codeTaught.verified && __codeTaught.answer) {
+          answer = __codeTaught.answer;
+          var __codeVerified = true;
+        } else {
+          answer = 'I do not have enough local memory to answer that strongly yet. I can still reason about it, but the model should learn supporting facts or run a tool before treating the answer as reliable.';
+        }
+      }
     }
 
     if (intent === 'planning' && !adviceOnly && !/next/i.test(answer)) {
       answer += '\n- Next: convert the strongest step into a benchmarked operator so the swarm can repeat it and improve.';
     }
     const selfContainedConversationalAct = /\b(?:story|tale|disagree|downside|drawback|too much coffee|brain is vibrating|overcaffeinated|caffeine)\b/i.test(message);
-    if (confidence < 0.45 && intent !== 'greeting' && !selfContainedConversationalAct) {
+    if (confidence < 0.45 && !conversationalIntent && intent !== 'greeting' && intent !== 'preference' && !selfContainedConversationalAct && typeof __codeVerified === 'undefined') {
       answer += '\n\nConfidence is low because this is not well covered in local memory yet.';
     }
 
@@ -5184,6 +5602,10 @@ function attachSwarmModelRuntime(globalScope) {
 
   function runGeneralChat(model, message = '', options = {}) {
     const intent = classifyChatIntent(message);
+    // Learn from how the user talks: update their register profile every turn.
+    try {
+      observeUserRegister(model, message, resolveLariPreferenceUserScope(model, options));
+    } catch (_) { /* observation never breaks chat */ }
     const structuredEvidenceComparison = intent === 'comparison'
       && /\boption\s+a\b[\s\S]+\boption\s+b\b/i.test(message)
       && /\b(?:recommend|choose|prefer)\b/i.test(message);
@@ -5222,10 +5644,19 @@ function attachSwarmModelRuntime(globalScope) {
     }
     const explicitCanonicalChatAct = Number(preferredGroundedClaimRoute?.semanticPriority || 0) >= 3
       || /\b(?:summari[sz]e|summary|brainstorm|ideas?|rewrite|story|tale)\b/i.test(message);
-    const recap = preferredGroundedClaimRoute?.record?.payload?.responsePlan?.composition === 'grounded_research_claims'
+    // Conversational turns skip the recap: it would match "what is up" to a
+    // retained Titanic record via the word "up".
+    const conversationalForRecap = ['greeting', 'small_talk', 'goodbye', 'opinion', 'personal', 'joke', 'preference',
+      'follow_up', 'reaction_laugh', 'reaction_hype', 'reaction_damn', 'reaction_ack', 'reaction_shrug',
+      'mood_low', 'mood_high', 'mood_vent', 'thanks'].includes(intent);
+    const recap = conversationalForRecap ? null
+      : preferredGroundedClaimRoute?.record?.payload?.responsePlan?.composition === 'grounded_research_claims'
       ? null
       : (!explicitCanonicalChatAct && !structuredEvidenceComparison && !structuredOperationalPlan && nodeRecapLanguage?.realize ? nodeRecapLanguage.realize(model, message) : null);
-    const learnedChatRoute = recap || isLariPracticalMathPrompt(message) || structuredEvidenceComparison || structuredOperationalPlan
+    const conversationalChatIntent = ['greeting', 'small_talk', 'goodbye', 'opinion', 'personal', 'joke',
+      'follow_up', 'reaction_laugh', 'reaction_hype', 'reaction_damn', 'reaction_ack', 'reaction_shrug',
+      'mood_low', 'mood_high', 'mood_vent', 'thanks'].includes(intent);
+    const learnedChatRoute = conversationalChatIntent || recap || isLariPracticalMathPrompt(message) || structuredEvidenceComparison || structuredOperationalPlan
       ? null
       : preferredGroundedClaimRoute;
     const learnedChat = executeLariGeneralChatProcedure(learnedChatRoute, message);
@@ -5289,6 +5720,26 @@ function attachSwarmModelRuntime(globalScope) {
     };
     model.generalChat = model.generalChat || { turns: [], reports: [] };
     model.generalChat.turns = [record, ...(model.generalChat.turns || [])].slice(0, options.turnLimit || 200);
+    // Conversation context for follow-ups: remember this exchange per user.
+    // Episodic memory: accumulate the conversation into long-term episodes.
+    try {
+      const __scope = resolveLariPreferenceUserScope(model, options);
+      // Finalize a stale draft first: if the last episode draft is older than
+      // 6 hours, that conversation ended — write it out before starting fresh.
+      try {
+        const __ctx = ensureUserModel(model).conversationContext?.[__scope];
+        const __draft = __ctx?.episodeDraft;
+        if (__draft && __draft.length) {
+          const __lastTime = new Date(__draft[__draft.length - 1].timestamp).getTime();
+          if (Date.now() - __lastTime > 6 * 3600000) {
+            finalizeEpisode(model, __scope, __draft);
+            __ctx.episodeDraft = [];
+          }
+        }
+      } catch (_) { /* stale check never breaks chat */ }
+      recordConversationTurn(model, message, response.answer, intent, __scope);
+      maybeRecordEpisodicMemory(model, message, intent, __scope);
+    } catch (_) { /* context never breaks chat */ }
     if (options.correction) {
       const correctionTopic = options.correction.topic || message;
       const correctionSummary = options.correction.summary || options.correction.answer || '';
@@ -13207,6 +13658,152 @@ function attachSwarmModelRuntime(globalScope) {
       || (/\d/.test(raw) && /\b(?:plus|minus|times|multiplied by|divided by)\b/i.test(raw));
   }
 
+  function isLariTimePrompt(prompt = '') {
+    return /\bwhat time is it\b/i.test(String(prompt || ''));
+  }
+
+  // Place name -> IANA timezone. US states resolve to their capital's zone;
+  // world cities + a few countries included. Unknown places are answered
+  // honestly ("I don't have timezone data"), never guessed.
+  const LARI_TIME_PLACE_ZONES = {
+    'maine': 'America/New_York', 'new hampshire': 'America/New_York',
+    'vermont': 'America/New_York', 'massachusetts': 'America/New_York',
+    'rhode island': 'America/New_York', 'connecticut': 'America/New_York',
+    'new york': 'America/New_York', 'new jersey': 'America/New_York',
+    'pennsylvania': 'America/New_York', 'delaware': 'America/New_York',
+    'maryland': 'America/New_York', 'virginia': 'America/New_York',
+    'west virginia': 'America/New_York', 'north carolina': 'America/New_York',
+    'south carolina': 'America/New_York', 'georgia': 'America/New_York',
+    'florida': 'America/New_York', 'ohio': 'America/New_York',
+    'michigan': 'America/New_York', 'indiana': 'America/New_York',
+    'kentucky': 'America/New_York', 'washington dc': 'America/New_York',
+    'district of columbia': 'America/New_York', 'dc': 'America/New_York',
+    'wisconsin': 'America/Chicago', 'illinois': 'America/Chicago',
+    'minnesota': 'America/Chicago', 'iowa': 'America/Chicago',
+    'missouri': 'America/Chicago', 'arkansas': 'America/Chicago',
+    'louisiana': 'America/Chicago', 'mississippi': 'America/Chicago',
+    'alabama': 'America/Chicago', 'tennessee': 'America/Chicago',
+    'oklahoma': 'America/Chicago', 'kansas': 'America/Chicago',
+    'nebraska': 'America/Chicago', 'south dakota': 'America/Chicago',
+    'north dakota': 'America/Chicago', 'texas': 'America/Chicago',
+    'montana': 'America/Denver', 'idaho': 'America/Denver',
+    'wyoming': 'America/Denver', 'utah': 'America/Denver',
+    'colorado': 'America/Denver', 'new mexico': 'America/Denver',
+    'arizona': 'America/Phoenix',
+    'washington': 'America/Los_Angeles', 'oregon': 'America/Los_Angeles',
+    'california': 'America/Los_Angeles', 'nevada': 'America/Los_Angeles',
+    'alaska': 'America/Anchorage', 'hawaii': 'Pacific/Honolulu',
+    'london': 'Europe/London', 'paris': 'Europe/Paris',
+    'berlin': 'Europe/Berlin', 'rome': 'Europe/Rome', 'madrid': 'Europe/Madrid',
+    'moscow': 'Europe/Moscow', 'amsterdam': 'Europe/Amsterdam',
+    'zurich': 'Europe/Zurich', 'stockholm': 'Europe/Stockholm',
+    'oslo': 'Europe/Oslo', 'copenhagen': 'Europe/Copenhagen',
+    'vienna': 'Europe/Vienna', 'prague': 'Europe/Prague',
+    'warsaw': 'Europe/Warsaw', 'lisbon': 'Europe/Lisbon',
+    'dublin': 'Europe/Dublin', 'athens': 'Europe/Athens',
+    'istanbul': 'Europe/Istanbul', 'tokyo': 'Asia/Tokyo',
+    'beijing': 'Asia/Shanghai', 'shanghai': 'Asia/Shanghai',
+    'hong kong': 'Asia/Hong_Kong', 'singapore': 'Asia/Singapore',
+    'dubai': 'Asia/Dubai', 'mumbai': 'Asia/Kolkata', 'delhi': 'Asia/Kolkata',
+    'seoul': 'Asia/Seoul', 'bangkok': 'Asia/Bangkok',
+    'jakarta': 'Asia/Jakarta', 'karachi': 'Asia/Karachi',
+    'dhaka': 'Asia/Dhaka', 'manila': 'Asia/Manila', 'taipei': 'Asia/Taipei',
+    'sydney': 'Australia/Sydney', 'auckland': 'Pacific/Auckland',
+    'cairo': 'Africa/Cairo', 'lagos': 'Africa/Lagos',
+    'nairobi': 'Africa/Nairobi', 'johannesburg': 'Africa/Johannesburg',
+    'toronto': 'America/Toronto', 'vancouver': 'America/Vancouver',
+    'mexico city': 'America/Mexico_City', 'sao paulo': 'America/Sao_Paulo',
+    'buenos aires': 'America/Argentina/Buenos_Aires',
+    'los angeles': 'America/Los_Angeles', 'san francisco': 'America/Los_Angeles',
+    'seattle': 'America/Los_Angeles', 'chicago': 'America/Chicago',
+    'houston': 'America/Chicago', 'denver': 'America/Denver',
+    'boston': 'America/New_York', 'miami': 'America/New_York',
+    'atlanta': 'America/New_York', 'new york city': 'America/New_York',
+    'nyc': 'America/New_York', 'honolulu': 'Pacific/Honolulu',
+    'anchorage': 'America/Anchorage',
+    'japan': 'Asia/Tokyo', 'china': 'Asia/Shanghai', 'uk': 'Europe/London',
+    'england': 'Europe/London', 'france': 'Europe/Paris',
+    'germany': 'Europe/Berlin', 'italy': 'Europe/Rome',
+    'spain': 'Europe/Madrid', 'canada': 'America/Toronto',
+    'mexico': 'America/Mexico_City', 'brazil': 'America/Sao_Paulo',
+    'australia': 'Australia/Sydney', 'india': 'Asia/Kolkata',
+    'egypt': 'Africa/Cairo'
+  };
+
+  /**
+   * Deterministic time answering. The clock is read, not researched:
+   * "what time is it" -> user's timezone (context.userTimezone) or UTC;
+   * "what time is it in <place>" -> place->timezone map.
+   * Returns { answer, known } — unknown places are admitted, never guessed.
+   */
+  function answerLariTimePrompt(prompt, context = {}) {
+    const raw = String(prompt || '');
+    const placeMatch = raw.match(/\bwhat time is it\s+in\s+([a-zA-Z][a-zA-Z\s.'-]*?)\s*[?.!]*$/i);
+    let timeZone;
+    let placeName = null;
+    if (placeMatch) {
+      placeName = placeMatch[1].trim();
+      timeZone = LARI_TIME_PLACE_ZONES[placeName.toLowerCase()];
+      if (!timeZone) {
+        return {
+          answer: `I don't have timezone data for "${placeName}" yet, so I won't guess the time there.`,
+          known: false
+        };
+      }
+    } else {
+      timeZone = (context && context.userTimezone) || 'UTC';
+    }
+    let clock;
+    try {
+      clock = new Intl.DateTimeFormat('en-US', {
+        timeZone, hour: 'numeric', minute: '2-digit', hour12: true, timeZoneName: 'short'
+      }).format(new Date());
+    } catch (_) {
+      return { answer: `I couldn't read the clock for that timezone.`, known: false };
+    }
+    const answer = placeName
+      ? `It's ${clock} in ${placeName} right now.`
+      : `It's ${clock}.`;
+    return { answer, known: true, timeZone, placeName };
+  }
+
+  /**
+   * Native dictionary lane. WordNet *is* the authority on what words mean, so
+   * "what is a goose" / "define serendipity" / "what does quixotic mean" are
+   * answered from the dictionary directly — never researched, never gated.
+   * Returns the defined term, or null when the prompt is not a dictionary
+   * question. Multi-word factual questions ("what is the capital of Ohio")
+   * are deliberately excluded so the research loop keeps those.
+   */
+  function isLariDefinePrompt(prompt = '') {
+    const raw = String(prompt || '').trim();
+    const direct = raw.match(/^(?:what\s+is|what\s+are|what's|define)\s+(?:a\s+|an\s+|the\s+)?([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,2})\s*\??$/)
+      || raw.match(/^what\s+does\s+(?:the\s+word\s+)?["']?([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,2})["']?\s+mean\s*\??$/i);
+    if (!direct) return null;
+    const term = direct[1].toLowerCase().trim();
+    // Prepositions / question scaffolding mean it's a factual question, not a
+    // word-definition question — leave those to research and normal chat.
+    if (/\b(?:of|in|on|for|with|by|to|from|at|is|are|was|were|do|does|time|capital|color|colour)\b/.test(term)) return null;
+    return term;
+  }
+
+  function answerLariDefinePrompt(prompt = '') {
+    const term = isLariDefinePrompt(prompt);
+    if (!term || !nodeWordNetCapability) return null;
+    const senses = nodeWordNetCapability.define(term) || [];
+    if (!senses.length) return null; // not in the dictionary: fall through
+    const shown = senses.slice(0, 3).map(sense => {
+      const kind = sense.hypernyms && sense.hypernyms.length
+        ? ` (a kind of ${sense.hypernyms.slice(0, 2).join(', ')})`
+        : '';
+      return `${sense.pos}: ${sense.gloss}${kind}`;
+    });
+    const answer = shown.length === 1
+      ? `${term} — ${shown[0]}.`
+      : `${term}:\n${shown.map((line, i) => `${i + 1}. ${line}`).join('\n')}`;
+    return { answer, term, senseCount: senses.length };
+  }
+
   function isLariConcreteModelAnswer(answer = '') {
     const text = String(answer || '').trim();
     return /^function\s+[A-Za-z_$][A-Za-z0-9_$]*\s*\(/.test(text)
@@ -13425,6 +14022,18 @@ function attachSwarmModelRuntime(globalScope) {
       if (known && known !== fallback && !isLariGenericFallbackAnswer(known)) return { answer: known, intent, source: 'code_router_known' };
       const generic = synthesizeLariGenericCodeTemplateAnswer(raw, fallback);
       if (generic && generic !== fallback && !isLariGenericFallbackAnswer(generic)) return { answer: generic, intent, source: 'code_router_template' };
+      // Self-teaching bridge: memory and templates missed. Attempt to solve it
+      // for real — generate, run in a sandbox, verify — and learn the result.
+      // Only answers when the code is verified working; otherwise falls through
+      // to the honest low-confidence path instead of bluffing.
+      try {
+        if (nodeCodeSelfTeach && typeof nodeCodeSelfTeach.answerCodingRequest === 'function') {
+          const taught = nodeCodeSelfTeach.answerCodingRequest(model, raw, {});
+          if (taught && taught.verified && taught.answer) {
+            return { answer: taught.answer, intent, source: 'code_self_teach_verified' };
+          }
+        }
+      } catch (_) { /* self-teach never breaks chat */ }
     }
     if (intent === 'instruction') {
       const answer = synthesizeLariInstructionFollowingAnswer(raw, fallback, {
@@ -22593,7 +23202,9 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     if (result?.publicAnswerSource === 'native_math_reasoning' && output) return output;
     if (/^(?:generate_local_(?:image|audio)_artifact|image_request_outside_executable_scope|audio_request_outside_executable_scope|video_generation_unavailable)$/.test(String(record?.action || '')) && output) return output;
     if (record?.intent === 'chat') {
-      if (/^(?:hi|hey|hello|yo|sup)(?:\s+(?:there|lari|man|friend))?[!,. ]*$/.test(prompt.trim())) return 'Hey, I am here. Ask me anything, or give me a task and I will handle it locally.';
+      // Bare greetings are handled by the conversational path (tone-aware, with
+      // variety). This hardcoded string is only a fallback if that produced nothing.
+      if (/^(?:hi|hey|hello|yo|sup)(?:\s+(?:there|lari|man|friend))?[!,. ]*$/.test(prompt.trim()) && !output) return 'Yo. I am here, I am local, I am ready. What are we doing?';
       if (/\b(status|how smart|what can you do|where are we)\b/.test(prompt)) {
         // Native-generator lane: render the fixed identity meaning through
         // Lari's own generator; the canned string stays as the fallback.
@@ -27382,6 +27993,7 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     const run = runLariUnifiedTaskKernel(model, request, {
       ...(context.kernel || {}),
       userScope,
+      userTimezone: context.userTimezone || context.kernel?.userTimezone || null,
       languageContext: {
         ...(context.kernel?.languageContext || {}),
         turns: session.turns || []
@@ -27664,6 +28276,41 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     return response;
   }
 
+  // Frame-role validation for the retention gate. A confident-but-wrong-topic
+  // acquisition (the Einstein record was about his son Hans) sails through the
+  // follow-up answer gate because the pipeline is confident in its own
+  // wrongness. The question's frame says what KIND of value was requested; the
+  // learned summary must actually carry it, about the right subject.
+  function frameAnswerSatisfied(frame = {}, summary = '') {
+    const text = String(summary || '');
+    const escapePattern = value => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const normalizeName = value => String(value || '').trim().toLowerCase().replace(/^(?:the|a|an)\s+/i, '');
+    switch (frame.frame) {
+      case 'person':
+      case 'definition': {
+        const subject = normalizeName(frame.subject);
+        if (!subject) return true;
+        // The definitional subject of the summary must BE the requested
+        // subject, not merely contain it: "Hans Albert Einstein" contains
+        // "Albert Einstein" as whole words but is a different person.
+        const definitional = text.match(/^\s*([A-Z][A-Za-z .'\-]{2,60}?)\s*(?:\([^)]{0,80}\))?\s+(?:was|is|were|are)\b/);
+        if (definitional) return normalizeName(definitional[1]) === subject;
+        return new RegExp(`\\b${escapePattern(subject)}\\b`, 'i').test(text);
+      }
+      case 'event_date':
+        return /\b(1[0-9]{3}|20[0-2][0-9])\b/.test(text);
+      case 'quantity':
+        return /\b\d[\d,]*\b/.test(text)
+          || /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen|hundred|thousand|million|billion)\b/i.test(text);
+      case 'office_holder': {
+        const office = String(frame.office || '').trim();
+        return !!office && new RegExp(`\\b${escapePattern(office)}\\b`, 'i').test(text);
+      }
+      default:
+        return true;
+    }
+  }
+
   // Live-learning persistence. Records the model learns during a chat turn
   // (research acquisitions, compiled skills, self-teaching episodes) must be
   // written back to the model file when the outermost chat turn completes.
@@ -27674,12 +28321,54 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
 
   function learnedModelFingerprint(model) {
     const records = model?.lariLearnedRecords?.records;
+    // Local hash: the loader-scope sha256 const is not visible here, so hash
+    // in place. (This also fixes the pre-existing silent 'err' stateHash —
+    // preference and register changes were never actually fingerprinted.)
+    const hashState = value => {
+      try {
+        if (typeof crypto !== 'undefined' && crypto.createHash) {
+          return crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 16);
+        }
+      } catch (_) { /* fall through */ }
+      let h = 0x811c9dc5;
+      const str = String(value);
+      for (let i = 0; i < str.length; i++) {
+        h ^= str.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+      }
+      return h.toString(16).padStart(8, '0');
+    };
+    // Hash the mutable learned state, not just array lengths: same-length
+    // mutations (tone preference updates, register profile drift, conversation
+    // context) must also trigger a checkpoint write.
+    let stateHash = '';
+    try {
+      const mutable = {
+        prefs: (model?.lariLearnedRecords?.records || [])
+          .filter(r => r && (r.type === 'preference' || r?.payload?.domain === 'general'))
+          .map(r => [r.id, r?.payload?.key, r?.payload?.value, r?.status]),
+        // Register profiles: quantize so tiny per-turn drift does not force a
+        // write every chat turn; meaningful shifts still trigger a checkpoint.
+        // Conversation context is ephemeral session state: excluded.
+        register: Object.fromEntries(Object.entries(model?.userModel?.registerProfiles || {})
+          .map(([scope, prof]) => [scope, [
+            Math.round((prof?.casualness || 0) * 10) / 10,
+            Math.round((prof?.terseness || 0) * 10) / 10
+          ]])),
+        episodic: Object.fromEntries(Object.entries(model?.userModel?.episodicMemories || {})
+          .map(([scope, list]) => [scope, (list || []).map(e => e.id)])),
+        codeSolutions: (model?.lariCodeGeneration?.solutions || []).map(s => s.taskId),
+        codeLearningGoals: (model?.lariCodeGeneration?.learningGoals || []).map(g => g.taskId || g.description)
+      };
+      stateHash = hashState(JSON.stringify(mutable));
+    } catch (_) { stateHash = 'err'; }
     return [
       Array.isArray(records) ? records.length : 0,
       Array.isArray(model?.compiledSkills) ? model.compiledSkills.length : 0,
       Array.isArray(model?.skills) ? model.skills.length : 0,
       Array.isArray(model?.selfTeaching?.episodes) ? model.selfTeaching.episodes.length : 0,
-      Array.isArray(model?.curiosity?.completed) ? model.curiosity.completed.length : 0
+      Array.isArray(model?.curiosity?.completed) ? model.curiosity.completed.length : 0,
+      stateHash
     ].join(':');
   }
 
@@ -27779,12 +28468,18 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
           }
         }
         if (hasFreshSources) {
-          // Snapshot learn-state lengths so a useless acquisition can be
-          // rolled back exactly (ingest only prepends to these lists).
+          // Snapshot learn-state as true array copies so a useless acquisition
+          // can be rolled back exactly. ingestKnowledge PREPENDS to these
+          // lists, so length truncation would keep the new junk at the front
+          // and silently drop a legitimate tail record -- restore the
+          // snapshots instead.
           const learnSnapshot = {
-            records: model.lariLearnedRecords?.records?.length || 0,
-            episodes: model.selfTeaching?.episodes?.length || 0,
-            skills: model.skills?.length || 0
+            records: Array.isArray(model.lariLearnedRecords?.records) ? [...model.lariLearnedRecords.records] : null,
+            episodes: Array.isArray(model.selfTeaching?.episodes) ? [...model.selfTeaching.episodes] : null,
+            skills: Array.isArray(model.skills) ? [...model.skills] : null,
+            compiledSkills: Array.isArray(model.compiledSkills) ? [...model.compiledSkills] : null,
+            curiosityQueue: Array.isArray(model.curiosity?.queue) ? [...model.curiosity.queue] : null,
+            curiosityCompleted: Array.isArray(model.curiosity?.completed) ? [...model.curiosity.completed] : null
           };
           const acquisition = runAutonomousKnowledgeAcquisition(model, String(response.message || ''), {
             force: true,
@@ -27831,21 +28526,28 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
             // gate (off-topic evidence, unanswerable question), the acquisition
             // is rolled back instead of retained — research that does not help
             // must not accumulate in the model.
-            if (response.passed !== true && acquisition.action === 'learned_from_sources') {
+            // Retention gate: keep the learned record only if it demonstrably
+            // answers the question. When the follow-up answer still fails its
+            // gate (off-topic evidence, unanswerable question) OR the learned
+            // summary fails the question's frame role (confident but about the
+            // wrong subject, no date where a date was asked, no number where a
+            // count was asked), the acquisition is rolled back instead of
+            // retained — research that does not help must not accumulate in
+            // the model.
+            const frameOk = frameAnswerSatisfied(researchPlan.frame, acquisition.learned?.summary);
+            if ((response.passed !== true || !frameOk) && acquisition.action === 'learned_from_sources') {
               const discardedId = acquisition.learned?.lariTypedRecordId || acquisition.learned?.id || null;
-              if (Array.isArray(model.lariLearnedRecords?.records)) {
-                model.lariLearnedRecords.records.length = Math.min(model.lariLearnedRecords.records.length, learnSnapshot.records);
-              }
-              if (Array.isArray(model.selfTeaching?.episodes)) {
-                model.selfTeaching.episodes.length = Math.min(model.selfTeaching.episodes.length, learnSnapshot.episodes);
-              }
-              if (Array.isArray(model.skills)) {
-                model.skills.length = Math.min(model.skills.length, learnSnapshot.skills);
-              }
+              if (learnSnapshot.records) model.lariLearnedRecords.records = learnSnapshot.records;
+              if (learnSnapshot.episodes) model.selfTeaching.episodes = learnSnapshot.episodes;
+              if (learnSnapshot.skills) model.skills = learnSnapshot.skills;
+              if (learnSnapshot.compiledSkills) model.compiledSkills = learnSnapshot.compiledSkills;
+              if (learnSnapshot.curiosityQueue && model.curiosity) model.curiosity.queue = learnSnapshot.curiosityQueue;
+              if (learnSnapshot.curiosityCompleted && model.curiosity) model.curiosity.completed = learnSnapshot.curiosityCompleted;
               try { refreshLariKnowledgeProjections(model); } catch (_) {}
               response.trace = [...(response.trace || []), {
                 phase: 'learned_record_discarded',
-                reason: 'followup_answer_still_failing',
+                reason: response.passed !== true ? 'followup_answer_still_failing' : 'frame_role_not_satisfied',
+                frame: researchPlan.frame?.frame || 'unknown',
                 recordId: discardedId,
                 external_model_calls: 0
               }];
@@ -28035,6 +28737,82 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
         }
       }
     } catch (_) {}
+    // "go learn python" — autonomous topic learning. Bounded per turn and
+    // resumable (completed topics are skipped), never breaks the response.
+    try {
+      const __learnMatch = /^(?:go\s+)?learn\s+(python|javascript|js|golang|go)\b/i.exec(String(message || '').trim());
+      if (__learnMatch && nodeCodeLearn && typeof nodeCodeLearn.learnTopic === 'function') {
+        const __learnLang = /javascript|\bjs\b/i.test(__learnMatch[1]) ? 'javascript'
+          : /^(go|golang)$/i.test(__learnMatch[1]) ? 'go' : 'python';
+        const __learnApi = {
+          runAutonomousKnowledgeAcquisition: (m, q, o) => runAutonomousKnowledgeAcquisition(m, q, o),
+          planAutonomousKnowledgeAcquisition: (m, q, o) => planAutonomousKnowledgeAcquisition(m, q, o)
+        };
+        const __learnResult = nodeCodeLearn.learnTopic(model, __learnLang, __learnApi, {
+          maxTopics: 2,
+          maxExamplesPerTopic: 4,
+          sourceProvider: context.researchFactory
+            ? (plan) => {
+                const ro = context.researchFactory({ model, prompt: '', context, plan }) || {};
+                return typeof ro.sourceProvider === 'function' ? ro.sourceProvider(plan) : (ro.sources || []);
+              }
+            : undefined,
+          sources: (context.research && context.research.sources) || []
+        });
+        if (__learnResult && response && typeof response === 'object') {
+          response.learnTopic = {
+            language: __learnResult.language,
+            curriculumSource: __learnResult.curriculumSource,
+            topicsPlanned: __learnResult.topicsPlanned,
+            topicsCompleted: __learnResult.topicsCompleted,
+            topics: (__learnResult.topics || []).map(t => ({
+              topic: t.topic,
+              completed: !!t.completed,
+              examplesVerified: t.examplesVerified || 0,
+              implementationsLearned: t.implementationsLearned || 0,
+              studiedOnly: !!t.studiedOnly
+            }))
+          };
+        }
+      }
+    } catch (_) { /* learning never breaks chat */ }
+    // Opportunistic coding-goal work: if this turn was coding-related and Lari
+    // has open coding research goals with oracles, try to close one. Bounded
+    // (single goal) and never breaks the response.
+    try {
+      const __isCodingTurn = /\b(python|javascript|node|script|function|code|program|debug|fix)\b/i.test(message || '')
+        || (response && /code/.test(String(response.intent || '')));
+      const __openGoals = (model && model.lariCodeGeneration && model.lariCodeGeneration.learningGoals || [])
+        .filter(g => g && g.status === 'open');
+      if (__isCodingTurn && __openGoals.length && nodeCodeAgentic
+        && typeof nodeCodeAgentic.workOpenCodingGoals === 'function'
+        && context.workCodingGoals !== false) {
+        const __researchApi = {
+          runAutonomousKnowledgeAcquisition: (m, q, o) => runAutonomousKnowledgeAcquisition(m, q, o),
+          planAutonomousKnowledgeAcquisition: (m, q, o) => planAutonomousKnowledgeAcquisition(m, q, o)
+        };
+        const __oracleFor = {};
+        // Oracles live on the goals recorded from task practice; chat goals
+        // without one are skipped by workOpenCodingGoals.
+        for (const g of __openGoals) {
+          if (g.expectedOutput) __oracleFor[g.taskId] = g.expectedOutput;
+        }
+        const __goalWork = nodeCodeAgentic.workOpenCodingGoals(model, __researchApi, {
+          maxGoals: 1,
+          oracleFor: __oracleFor,
+          sourceProvider: context.researchFactory
+            ? (plan) => {
+                const ro = context.researchFactory({ model, prompt: '', context, plan }) || {};
+                return typeof ro.sourceProvider === 'function' ? ro.sourceProvider(plan) : (ro.sources || []);
+              }
+            : undefined,
+          sources: (context.research && context.research.sources) || []
+        });
+        if (__goalWork && __goalWork.closed > 0 && response && typeof response === 'object') {
+          response.codingGoalsClosed = __goalWork.details.filter(d => d.closed);
+        }
+      }
+    } catch (_) { /* goal work never breaks chat */ }
     return response;
   }
 
@@ -31887,6 +32665,20 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
         ...(languageUnderstanding.learnedSemanticOperatorIds || [])
       ].filter(Boolean))];
     }
+    // Native dictionary enrichment: every content word in the prompt carries
+    // its WordNet definitions into the chat pipeline. The dictionary is ground
+    // truth, not a learned capability, so this flows even when the learned
+    // language-understanding lane is unsupported.
+    const nativeWordMeanings = nodeWordNetCapability && nodeWordNetCapability.enrichContentWords
+      ? nodeWordNetCapability.enrichContentWords(originalPrompt)
+      : null;
+    if (languageUnderstanding && nativeWordMeanings && nativeWordMeanings.length) {
+      languageUnderstanding.wordMeanings = nativeWordMeanings;
+    }
+    const chatLanguageUnderstanding = languageUnderstanding
+      || (nativeWordMeanings && nativeWordMeanings.length
+        ? { supported: false, confidence: 0, native: true, semantics: {}, wordMeanings: nativeWordMeanings }
+        : null);
     let intent = classifyLariUnifiedTaskIntent(request);
     if (languageUnderstanding?.supported
       && languageUnderstanding.semantics?.intentOverride
@@ -32037,7 +32829,7 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     let action = intent;
     const explicitCorrectionRequest = /\b(?:not what i meant|you misunderstood|by .+ i meant|i said .+ not)\b/i.test(originalPrompt);
     const preferredGroundedClaimRoute = intent === 'chat' && !explicitCorrectionRequest
-      ? routeLariGeneralChatProcedure(model, prompt, classifyChatIntent(prompt), { languageUnderstanding })
+      ? routeLariGeneralChatProcedure(model, prompt, classifyChatIntent(prompt), { languageUnderstanding: chatLanguageUnderstanding })
       : null;
     const routingPromptText = `${String(prompt || '')} ${String(originalPrompt || '')}`;
     const structuredEvidenceComparison = intent === 'chat'
@@ -32065,7 +32857,17 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
           return comparisonSubjectTerms.every(group => group.length > 0 && group.some(term => haystack.has(term)));
         }) || null
       : null;
-    const recapExecution = preferredGroundedClaimRoute?.record?.payload?.responsePlan?.composition === 'grounded_research_claims'
+    // Conversational turns skip the kernel recap too: it matches "what is up"
+    // to retained records via generic words like "up".
+    const conversationalForKernelRecap = (() => {
+      try {
+        return ['greeting', 'small_talk', 'goodbye', 'opinion', 'personal', 'joke', 'preference',
+      'follow_up', 'reaction_laugh', 'reaction_hype', 'reaction_damn', 'reaction_ack', 'reaction_shrug',
+      'mood_low', 'mood_high', 'mood_vent', 'thanks'].includes(classifyChatIntent(originalPrompt));
+      } catch (_) { return false; }
+    })();
+    const recapExecution = conversationalForKernelRecap ? null
+      : preferredGroundedClaimRoute?.record?.payload?.responsePlan?.composition === 'grounded_research_claims'
       ? null
       : (!structuredEvidenceComparison && !structuredOperationalPlan && !(subjectKnowledgeRequired && !subjectKnowledgeHit) && recapLanguageEligible && nodeRecapLanguage?.realize
       ? nodeRecapLanguage.realize(model, originalPrompt)
@@ -32082,7 +32884,18 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     // has to run before any factual realization.
     const sensitiveInformationExfiltrationRequest = /\b(?:reveal|show|expose|dump|print|extract)\b[\s\S]{0,140}\b(?:private|hidden|system|internal)\b[\s\S]{0,100}\b(?:memor(?:y|ies)|instruction(?:s)?|prompt|rules?|secrets?|credentials?)\b/i.test(originalPrompt)
       || /\bignore\b[\s\S]{0,60}\b(?:rules?|instructions?)\b[\s\S]{0,140}\b(?:reveal|show|expose|dump|extract)\b/i.test(originalPrompt);
+    // Conversational turns (greetings, small talk, opinions, jokes) are never
+    // information-seeking. They must not be answered from retained knowledge.
+    const conversationalChatIntent = (() => {
+      try {
+        return ['greeting', 'small_talk', 'goodbye', 'opinion', 'personal', 'joke',
+      'follow_up', 'reaction_laugh', 'reaction_hype', 'reaction_damn', 'reaction_ack', 'reaction_shrug',
+      'mood_low', 'mood_high', 'mood_vent', 'thanks'].includes(classifyChatIntent(originalPrompt));
+        return isConv;
+      } catch (_) { return false; }
+    })();
     const retainedKnowledgeAnswerIntent = intent === 'chat'
+      && !conversationalChatIntent
       && !sensitiveInformationExfiltrationRequest
       && !explicitCorrectionRequest
       && !/^\s*(?:outline|summarize|how should|how do|how can)\b/i.test(originalPrompt)
@@ -32113,7 +32926,7 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
       })()
       : null;
     const learnedChatRoute = !recapExecution && !canonicalRecordExecution && !retainedKnowledgeRoute && !structuredEvidenceComparison && !structuredOperationalPlan && intent === 'chat' && subintent !== 'chat.language_editing'
-      ? (preferredGroundedClaimRoute || routeLariGeneralChatProcedure(model, prompt, classifyChatIntent(prompt), { languageUnderstanding }))
+      ? (preferredGroundedClaimRoute || routeLariGeneralChatProcedure(model, prompt, classifyChatIntent(prompt), { languageUnderstanding: chatLanguageUnderstanding }))
       : null;
     if (learnedChatRoute) {
       trace.push({
@@ -32346,6 +33159,71 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
       action = 'answer_with_repaired_skill';
       outputText = result.answer;
       trace.push({ phase: 'answer_repair_skill', skillId: answerRepairSkill.id, passed });
+    } else if (isLariTimePrompt(prompt)) {
+      // Time is a deterministic native capability: the clock is read, not
+      // researched. "what time is it" uses the caller's timezone
+      // (options.userTimezone, forwarded from context) or UTC;
+      // "what time is it in <place>" uses the place->timezone map.
+      // Unknown places are admitted, never guessed.
+      const timeAnswer = answerLariTimePrompt(prompt, options);
+      outputText = timeAnswer.answer;
+      passed = true;
+      action = 'answered_time';
+      result = {
+        answer: outputText,
+        confidence: timeAnswer.known === false ? 0.7 : 0.95,
+        publicAnswerSource: 'native_time_reasoning',
+        executionBinding: {
+          contractPresent: true,
+          contractId: 'native.time.reasoning',
+          skillId: capabilityRoute?.node?.sourceSkillId || null,
+          learnedRecordId: null,
+          executed: true,
+          verified: true,
+          result: outputText,
+          resultType: 'time_answer',
+          fallbackAllowed: false
+        }
+      };
+      trace.push({
+        phase: 'time_answer',
+        timeZone: timeAnswer.timeZone || null,
+        placeName: timeAnswer.placeName || null,
+        known: timeAnswer.known !== false,
+        answer: outputText,
+        passed
+      });
+    } else if (isLariDefinePrompt(prompt) && answerLariDefinePrompt(prompt)) {
+      // The dictionary is native ground truth: WordNet defines, never
+      // researched. Only fires when the word is actually in the dictionary;
+      // otherwise the prompt falls through to normal handling.
+      const defineAnswer = answerLariDefinePrompt(prompt);
+      outputText = defineAnswer.answer;
+      passed = true;
+      action = 'answered_define';
+      result = {
+        answer: outputText,
+        confidence: 0.95,
+        publicAnswerSource: 'native_dictionary',
+        executionBinding: {
+          contractPresent: true,
+          contractId: 'native.wordnet.define',
+          skillId: capabilityRoute?.node?.sourceSkillId || null,
+          learnedRecordId: null,
+          executed: true,
+          verified: true,
+          result: outputText,
+          resultType: 'dictionary_definition',
+          fallbackAllowed: false
+        }
+      };
+      trace.push({
+        phase: 'dictionary_define',
+        term: defineAnswer.term,
+        senseCount: defineAnswer.senseCount,
+        answer: outputText,
+        passed
+      });
     } else if (isLariPracticalMathPrompt(prompt)
       || isLariExplicitArithmeticPrompt(prompt)) {
       // Arithmetic is a native Lari capability inside the shared model.  It
@@ -32688,6 +33566,32 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
           workspaceRequired: false,
           passed
         });
+      } else if (!failureWorkspaceRoot) {
+        // Self-teaching bridge: no workspace, no canned answer. Try to solve
+        // it for real — generate, run in a sandbox, verify — and learn it.
+        let __taught = null;
+        try {
+          if (nodeCodeSelfTeach && typeof nodeCodeSelfTeach.answerCodingRequest === 'function') {
+            __taught = nodeCodeSelfTeach.answerCodingRequest(model, prompt, {});
+          }
+        } catch (_) { /* self-teach never breaks the loop */ }
+        if (__taught && __taught.verified && __taught.answer) {
+          result = {
+            answer: __taught.answer,
+            confidence: 1,
+            publicAnswerSource: 'code_self_teach_verified'
+          };
+          passed = true;
+          action = 'answer_with_local_code_synthesis';
+          outputText = __taught.answer;
+          trace.push({
+            phase: 'code_synthesis',
+            action,
+            source: 'code_self_teach_verified',
+            workspaceRequired: false,
+            passed
+          });
+        }
       } else if (failureWorkspaceRoot && failureTestPath && (subintent === 'code.fix' || subintent === 'code.failure_learning')) {
         const publicExampleReproducer = Array.isArray(request.publicExamples)
           && request.publicExamples.length > 0
@@ -32831,7 +33735,7 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
         } else {
           result = runGeneralChat(model, prompt, {
             ...(options.chat || {}),
-            languageUnderstanding,
+            languageUnderstanding: chatLanguageUnderstanding,
             userScope: resolveLariPreferenceUserScope(model, options)
           });
         }
@@ -32858,7 +33762,15 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
           result.publicAnswerSource = directAnswer.source || null;
         }
       }
-      if (/^I don[’']t have a reliable answer for that yet\./i.test(String(result?.answer || ''))) {
+      // Conversational turns never fall back to knowledge search.
+      const isConversationalFallback = (() => {
+        try {
+          return ['greeting', 'small_talk', 'goodbye', 'opinion', 'personal', 'joke', 'preference',
+      'follow_up', 'reaction_laugh', 'reaction_hype', 'reaction_damn', 'reaction_ack', 'reaction_shrug',
+      'mood_low', 'mood_high', 'mood_vent', 'thanks'].includes(classifyChatIntent(prompt));
+        } catch (_) { return false; }
+      })();
+      if (!isConversationalFallback && /^I don[’']t have a reliable answer for that yet\./i.test(String(result?.answer || ''))) {
         const retainedHit = searchKnowledge(model, prompt, { limit: 3, minScore: options.retainedKnowledgeMinScore ?? 0.3 })
           .find(hit => Number(hit.score || 0) >= (options.retainedKnowledgeAnswerScore ?? 0.34)
             && Number(hit.item?.confidence || 0) >= (options.retainedKnowledgeConfidence ?? 0.55)
@@ -32975,9 +33887,9 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
       } : null,
       external_model_calls: 0
     };
-    if (languageUnderstanding) {
-      record.languageUnderstanding = languageUnderstanding;
-      record.languageUnderstandingRecordIds = languageUnderstanding.learnedRecordIds || [];
+    if (chatLanguageUnderstanding) {
+      record.languageUnderstanding = chatLanguageUnderstanding;
+      record.languageUnderstandingRecordIds = chatLanguageUnderstanding.learnedRecordIds || [];
     }
     if (result?.goalCurriculum) record.goalCurriculum = result.goalCurriculum;
     const transientExecutionBinding = nativeLaneExecutionBinding
@@ -34569,6 +35481,279 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     return model.userModel;
   }
 
+  // Implicit register learning: watch HOW the user talks, not just what they
+  // say. Tracks casualness signals per user and nudges Lari's tone to match.
+  // Explicit style instructions always win over implicit signals.
+  const REGISTER_INFORMAL_MARKERS = /\b(?:lol|lmao|lmfao|rofl|yeah|yep|nah|gonna|wanna|gotta|kinda|sorta|dunno|tbh|ngl|imo|smh|bruh|dude|bro|man|shit|damn|hell|fuck|wtf|omg|haha|hahaha)\b/i;
+  const REGISTER_CONTRACTIONS = /\b(?:don't|can't|won't|isn't|aren't|wasn't|weren't|haven't|hasn't|hadn't|wouldn't|couldn't|shouldn't|didn't|doesn't|i'm|you're|he's|she's|it's|we're|they're|i've|you've|we've|they've|i'll|you'll|he'll|she'll|we'll|they'll|i'd|you'd|he'd|she'd|we'd|they'd)\b/i;
+
+  function observeUserRegister(model, message = '', userScope = 'default') {
+    if (!model || typeof model !== 'object') return null;
+    const text = String(message || '');
+    if (text.length < 3) return null;
+    const userModel = ensureUserModel(model);
+    userModel.registerProfiles = userModel.registerProfiles || {};
+    const profile = userModel.registerProfiles[userScope] || {
+      samples: 0,
+      casualness: 0.5,  // 0 = formal, 1 = very casual
+      terseness: 0.5,   // 0 = verbose, 1 = terse
+      updatedAt: null
+    };
+    // Score this message. No signal means neutral (0.5), not formal: a bare
+    // "hey" carries no register information and must not drag the profile
+    // toward professional.
+    let casual = 0.5;
+    if (REGISTER_INFORMAL_MARKERS.test(text)) casual += 0.3;
+    if (REGISTER_CONTRACTIONS.test(text)) casual += 0.15;
+    if (/[!]{2,}|[?]{2,}/.test(text)) casual += 0.1;
+    if (/\b[A-Z]{3,}\b/.test(text)) casual += 0.1;  // ALL CAPS words
+    if (text === text.toLowerCase() && text.length > 10) casual += 0.1;  // all lowercase
+    casual = Math.min(1, casual);
+    // Formal signals pull the other way.
+    if (/\b(?:please|thank you|kindly|regards|sincerely)\b/i.test(text)) casual -= 0.3;
+    if (/^[A-Z][^.!?]*[.]$/.test(text.trim()) && text.length > 40) casual -= 0.2;
+    casual = Math.max(0, Math.min(1, casual));
+
+    let terse = 0;
+    if (text.length < 20) terse = 0.9;
+    else if (text.length < 50) terse = 0.6;
+    else if (text.length < 120) terse = 0.3;
+    else terse = 0.1;
+
+    // Rolling average: new samples move the needle gradually.
+    const alpha = 0.25;
+    profile.samples += 1;
+    profile.casualness = profile.casualness * (1 - alpha) + casual * alpha;
+    profile.terseness = profile.terseness * (1 - alpha) + terse * alpha;
+    profile.updatedAt = new Date().toISOString();
+    userModel.registerProfiles[userScope] = profile;
+    return profile;
+  }
+
+  // Conversation context: remember the last exchange per user so follow-ups
+  // like "tell me more" or "what else" have something to continue.
+  function recordConversationTurn(model, message = '', answer = '', intent = '', userScope = 'default') {
+    if (!model || typeof model !== 'object') return;
+    try {
+      const userModel = ensureUserModel(model);
+      userModel.conversationContext = userModel.conversationContext || {};
+      const prev = userModel.conversationContext[userScope] || {};
+      // Extract a rough topic: longest noun-ish phrase from the user message.
+      const clean = String(message || '').replace(/[?!.]+$/g, '').trim();
+      const words = clean.split(/\s+/).filter(w => w.length > 2 && !/^(what|when|where|which|who|whom|whose|how|why|does|did|are|the|and|for|with|about)$/i.test(w));
+      const topic = words.length ? words.slice(-4).join(' ') : (prev.topic || '');
+      userModel.conversationContext[userScope] = {
+        topic: topic.slice(0, 80),
+        lastUserMessage: clean.slice(0, 200),
+        lastAnswer: String(answer || '').slice(0, 300),
+        lastIntent: intent,
+        turnCount: (prev.turnCount || 0) + 1,
+        // Preserve the episodic-memory draft: this record is rewritten every
+        // turn and must not wipe the accumulator.
+        episodeDraft: prev.episodeDraft || [],
+        updatedAt: new Date().toISOString()
+      };
+    } catch (_) { /* context never breaks chat */ }
+  }
+
+  function getConversationContext(model, userScope = 'default') {
+    try {
+      return ensureUserModel(model).conversationContext?.[userScope] || null;
+    } catch (_) { return null; }
+  }
+
+  // Episodic memory: what was talked about, with whom, when — not just
+  // facts learned, but the conversations themselves. This is what lets Lari
+  // say "last time you were working on X, how did it go?" weeks later.
+  // Episodes are extractive summaries (no LLM needed): the substantive user
+  // turns, compressed to topics + key messages, scored by importance.
+  const EPISODIC_SUBSTANTIVE_INTENTS = new Set([
+    'explanation', 'planning', 'comparison', 'composition', 'troubleshooting',
+    'opinion', 'personal', 'mood_low', 'mood_high', 'mood_vent', 'preference',
+    'open_chat', 'factual'
+  ]);
+
+  function extractEpisodeTopics(text = '') {
+    const words = String(text || '').toLowerCase().split(/\s+/)
+      .map(w => w.replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, ''))
+      .filter(w => w.length > 3 && !/^(what|when|where|which|who|whom|whose|how|why|does|did|are|the|and|for|with|about|from|that|this|have|has|had|will|would|should|could|there|their|been|were|your|you|its|building|making|doing|getting|going|having|using|trying|working|setting|looking|thinking|talking|asking|telling|want|need|like|just|very|really|much|more|some|such|into|over|under|again)$/.test(w));
+    // Keep order, dedupe, cap.
+    return [...new Set(words)].slice(0, 8);
+  }
+
+  function scoreEpisodeImportance(turns = []) {
+    // Multi-turn substantive discussion is inherently worth remembering:
+    // each turn past the first adds weight, plus bonuses for high-signal
+    // intents. A single throwaway line stays below the 0.4 threshold.
+    let score = 0.25 + 0.15 * Math.max(0, turns.length - 1);
+    for (const t of turns) {
+      const intent = t.intent || '';
+      if (['planning', 'mood_vent', 'troubleshooting', 'preference'].includes(intent)) score += 0.15;
+      else if (['mood_low', 'mood_high', 'composition', 'comparison'].includes(intent)) score += 0.08;
+      if ((t.message || '').length > 100) score += 0.08;
+    }
+    return Math.min(1, Math.round(score * 100) / 100);
+  }
+
+  function buildEpisodeSummary(turns = []) {
+    const userMsgs = turns
+      .map(t => String(t.message || '').replace(/\s+/g, ' ').trim())
+      .filter(m => m.length > 10)
+      .slice(0, 3);
+    // Rank topics by frequency across turns (repeated = more central), then
+    // by length (longer = more specific). Generic one-off words sink.
+    const freq = {};
+    for (const t of turns) {
+      for (const topic of new Set(extractEpisodeTopics(t.message))) {
+        freq[topic] = (freq[topic] || 0) + 1;
+      }
+    }
+    const topics = Object.keys(freq)
+      .sort((a, b) => (freq[b] - freq[a]) || (b.length - a.length))
+      .slice(0, 6);
+    const topicStr = topics.length ? topics.join(', ') : 'general chat';
+    const msgStr = userMsgs.length ? userMsgs.join(' / ').slice(0, 280) : '';
+    return { summary: `Discussed ${topicStr}${msgStr ? ': ' + msgStr : ''}`, topics };
+  }
+
+  function getEpisodicMemories(model, userScope = 'default') {
+    try {
+      const all = ensureUserModel(model).episodicMemories || {};
+      return Array.isArray(all[userScope]) ? all[userScope] : [];
+    } catch (_) { return []; }
+  }
+
+  function finalizeEpisode(model, userScope, draftTurns) {
+    if (!model || !draftTurns || !draftTurns.length) return null;
+    const substantive = draftTurns.filter(t =>
+      EPISODIC_SUBSTANTIVE_INTENTS.has(t.intent) || String(t.message || '').length > 40);
+    if (!substantive.length) return null;
+    const importance = scoreEpisodeImportance(substantive);
+    if (importance < 0.4) return null; // trivia does not become a memory
+    const { summary, topics } = buildEpisodeSummary(substantive);
+    const episode = {
+      id: `episodic.${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      summary: summary.slice(0, 400),
+      topics,
+      importance,
+      turnCount: substantive.length
+    };
+    const userModel = ensureUserModel(model);
+    userModel.episodicMemories = userModel.episodicMemories || {};
+    const list = userModel.episodicMemories[userScope] || [];
+    list.unshift(episode);
+    // Cap at 50 per user; prune lowest importance first.
+    while (list.length > 50) {
+      let minIdx = 0;
+      for (let i = 1; i < list.length; i++) {
+        if ((list[i].importance || 0) < (list[minIdx].importance || 0)) minIdx = i;
+      }
+      list.splice(minIdx, 1);
+    }
+    userModel.episodicMemories[userScope] = list;
+    return episode;
+  }
+
+  // Called after each turn. Accumulates an episode draft in the conversation
+  // context; finalizes it when the topic shifts or enough turns pass.
+  function maybeRecordEpisodicMemory(model, message = '', intent = '', userScope = 'default') {
+    if (!model || typeof model !== 'object') return null;
+    try {
+      const userModel = ensureUserModel(model);
+      userModel.conversationContext = userModel.conversationContext || {};
+      const ctx = userModel.conversationContext[userScope] || {};
+      const draft = Array.isArray(ctx.episodeDraft) ? ctx.episodeDraft : [];
+      const topics = extractEpisodeTopics(message);
+      const turn = { message: String(message || '').slice(0, 300), intent, topics,
+        timestamp: new Date().toISOString() };
+      // Topic-shift check runs against the draft BEFORE the current turn is
+      // added — otherwise the turn always overlaps with itself and a shift
+      // can never be detected.
+      const priorTopics = [...new Set(draft.flatMap(t => t.topics || []))];
+      const overlap = topics.filter(t => priorTopics.includes(t)).length;
+      const topicShifted = draft.length >= 3 && topics.length > 0 && overlap === 0;
+      draft.push(turn);
+      // Keep the draft bounded.
+      while (draft.length > 20) draft.shift();
+
+      const enoughTurns = draft.length >= 12;
+
+      let finalized = null;
+      if (topicShifted || enoughTurns) {
+        // Finalize everything except the current turn (it starts the new draft).
+        const toFinalize = draft.slice(0, -1);
+        finalized = finalizeEpisode(model, userScope, toFinalize);
+        ctx.episodeDraft = [turn];
+      } else {
+        ctx.episodeDraft = draft;
+      }
+      // Also finalize a stale draft: if the last draft turn is older than
+      // 6 hours, the conversation clearly ended — write it out.
+      const lastDraft = (ctx.episodeDraft || [])[0];
+      void lastDraft;
+      userModel.conversationContext[userScope] = ctx;
+      return finalized;
+    } catch (_) { return null; }
+  }
+
+  // Recall: score memories by topic overlap with the query, boosted by
+  // importance and recency.
+  function recallEpisodicMemories(model, userScope = 'default', query = '', limit = 3) {
+    const memories = getEpisodicMemories(model, userScope);
+    if (!memories.length) return [];
+    const queryTopics = new Set(extractEpisodeTopics(query));
+    const now = Date.now();
+    const scored = memories.map(m => {
+      const overlap = (m.topics || []).filter(t => queryTopics.has(t)).length;
+      const ageDays = (now - new Date(m.timestamp).getTime()) / 86400000;
+      const recency = Math.max(0, 1 - ageDays / 60); // decays over 60 days
+      const score = overlap * 2 + (m.importance || 0) * 1.5 + recency * 0.5;
+      return { memory: m, score };
+    });
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, limit).map(s => s.memory);
+  }
+
+  // Most recent important memory, for proactive references ("last time...").
+  // Only returns memories from the last 14 days to avoid weird deep cuts.
+  function getRecentImportantMemory(model, userScope = 'default') {
+    const memories = getEpisodicMemories(model, userScope);
+    const cutoff = Date.now() - 14 * 86400000;
+    for (const m of memories) {
+      if (new Date(m.timestamp).getTime() < cutoff) continue;
+      if ((m.importance || 0) >= 0.5) return m;
+    }
+    return null;
+  }
+
+  // Response variety: rotate through variants so repeated greetings do not
+  // feel canned. Deterministic per (key, turnCount) so it is stable in tests.
+  function pickVariant(variants, seed = '') {
+    if (!Array.isArray(variants) || !variants.length) return '';
+    let hash = 0;
+    for (let i = 0; i < seed.length; i++) hash = ((hash * 31) + seed.charCodeAt(i)) >>> 0;
+    return variants[hash % variants.length];
+  }
+
+  function resolveConversationalTone(model, context = {}) {
+    // 1. Explicit tone preference wins.
+    const prefs = getUserPreferences(model, 'general', context);
+    const explicit = prefs.find(p => p.key === 'tone' && p.explicit !== false);
+    if (explicit?.value) return String(explicit.value);
+    // 2. Implicit register: match the user's energy. Only override the default
+    // when the signal is strong -- neutral messages stay degen.
+    const userScope = resolveLariPreferenceUserScope(model, context);
+    const profile = ensureUserModel(model).registerProfiles?.[userScope];
+    if (profile && profile.samples >= 5) {
+      if (profile.casualness > 0.7) return 'degen';
+      if (profile.casualness < 0.3) return 'professional';
+      if (profile.terseness > 0.8) return 'concise';
+    }
+    // 3. Default: Greg likes it degen.
+    return 'degen';
+  }
+
   function stableLariPreferenceToken(value = '') {
     const text = String(value || '');
     const left = hashToken(text).toString(16).padStart(8, '0');
@@ -35604,11 +36789,28 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     const calibration = calibrateConfidence(model, query, {
       toolAvailable: options.toolAvailable !== false
     });
-    const shouldLearn = options.force ||
+    // Conversational turns (small talk, opinions, jokes, greetings) are not
+    // knowledge gaps. Never research them -- "how's it going" is not a
+    // request for the Godard film.
+    const chatIntent = (() => {
+      try { return classifyChatIntent(query); } catch (_) { return 'open_chat'; }
+    })();
+    const conversationalIntent = ['greeting', 'small_talk', 'goodbye', 'opinion', 'personal', 'joke',
+      'follow_up', 'reaction_laugh', 'reaction_hype', 'reaction_damn', 'reaction_ack', 'reaction_shrug',
+      'mood_low', 'mood_high', 'mood_vent', 'thanks'].includes(chatIntent);
+    const shouldLearn = !conversationalIntent && (options.force ||
       calibration.action === 'use_tool' ||
       calibration.action === 'ask_or_learn' ||
-      calibration.uncertainty >= (options.uncertaintyThreshold ?? 0.46);
-    const topic = learningTask?.target || options.topic || query
+      calibration.uncertainty >= (options.uncertaintyThreshold ?? 0.46));
+    // A parsed factual frame names the clean research subject. Research the
+    // subject ("Albert Einstein"), never the interrogative sentence ("who was
+    // Albert Einstein") -- the sentence form lands on fuzzy encyclopedia
+    // near-misses that then get retained as answers.
+    const frame = (() => {
+      try { return nodeResearchTools?.parseFactualFrame?.(query) || { frame: 'unknown' }; }
+      catch (_) { return { frame: 'unknown' }; }
+    })();
+    const topic = frame.subject || learningTask?.target || options.topic || query
       .replace(/\b(what is|what are|who is|who are|explain|teach me about|teach me how|help me understand(?: how)?|tell me about|how should|how does|how do)\b/gi, ' ')
       .replace(/[?.!]+$/g, '')
       .replace(/\s+/g, ' ')
@@ -35633,6 +36835,7 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     return {
       query,
       topic,
+      frame,
       shouldLearn,
       calibration,
       goal,
@@ -35789,9 +36992,81 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
         byFingerprint.set(fingerprint, existing);
       }
     }
+    // Frame-aware claim ranking: the question's frame says what KIND of
+    // sentence answers it. Without this the top claim is the article's most
+    // "explanatory" sentence, which may never answer what was asked (a spider
+    // article's Bagheera kiplingi trivia instead of "spiders have eight legs").
+    const claimFrame = options.frame && typeof options.frame === 'object' ? options.frame : { frame: 'unknown' };
+    const frameSubject = String(claimFrame.subject || '').trim();
+    const frameSubjectPattern = frameSubject ? new RegExp(`\\b${escapePattern(frameSubject)}s?\\b`, 'i') : null;
+    const numberWordPattern = '\\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen|hundred|thousand|million|billion)\\b';
+    const claimHasNumber = body => new RegExp(`\\b\\d[\\d,]*\\b|${numberWordPattern}`, 'i').test(String(body || ''));
+    // Morphological variants of the requested quantity ("legs" -> "limbs"):
+    // the answering sentence may phrase the count with a synonym.
+    const quantityOfVariants = value => {
+      const v = String(value || '').toLowerCase().trim();
+      const synonyms = {
+        legs: ['leg', 'legs', 'limb', 'limbs'],
+        arms: ['arm', 'arms', 'limb', 'limbs'],
+        eyes: ['eye', 'eyes'],
+        teeth: ['tooth', 'teeth'],
+        wings: ['wing', 'wings'],
+        planets: ['planet', 'planets'],
+        continents: ['continent', 'continents'],
+        states: ['state', 'states'],
+        countries: ['country', 'countries']
+      };
+      if (synonyms[v]) return synonyms[v];
+      const set = new Set([v]);
+      if (v.endsWith('s')) set.add(v.slice(0, -1)); else set.add(v + 's');
+      return [...set];
+    };
+    const quantityOfPattern = claimFrame.quantityOf
+      ? new RegExp(`\\b(?:${quantityOfVariants(claimFrame.quantityOf).map(escapePattern).join('|')})\\b`, 'i')
+      : null;
+    // Inflections of the event verb ("fall" -> "fell"/"fallen"): the answering
+    // sentence usually states the event with a verb form, not the infinitive.
+    const eventVerbForms = verb => {
+      const v = String(verb || '').toLowerCase().trim();
+      if (!v) return [];
+      const irregular = {
+        fall: ['fell', 'fallen'], sink: ['sank', 'sunk'], begin: ['began', 'begun'],
+        die: ['died', 'dead'], end: ['ended'], start: ['started'], occur: ['occurred'],
+        happen: ['happened'], collapse: ['collapsed'], build: ['built'], found: ['founded']
+      };
+      const forms = new Set([v, ...(irregular[v] || []), `${v}s`, `${v}ed`, `${v}ing`]);
+      if (v.endsWith('e')) forms.add(`${v}d`);
+      return [...forms];
+    };
+    const eventVerbPattern = claimFrame.eventVerb
+      ? new RegExp(`\\b(?:${eventVerbForms(claimFrame.eventVerb).map(escapePattern).join('|')})\\b`, 'i')
+      : null;
+    const scoreFrameClaim = sentence => {
+      if (!frameSubjectPattern || claimFrame.frame === 'unknown') return 0;
+      if (!frameSubjectPattern.test(sentence)) return 0;
+      switch (claimFrame.frame) {
+        case 'person':
+        case 'definition':
+          return /\b(was|is|were|are)\s+(a|an|the)\b/i.test(sentence) ? 2 : 1;
+        case 'event_date':
+          return /\b(1[0-9]{3}|20[0-2][0-9])\b/.test(sentence) ? 2 : 1;
+        case 'quantity':
+          return claimHasNumber(sentence) ? 2 : 1;
+        case 'office_holder': {
+          const office = String(claimFrame.office || '').trim();
+          return office && new RegExp(`\\b${escapePattern(office)}\\b`, 'i').test(sentence) ? 2 : 1;
+        }
+        case 'attribute':
+          return 1;
+        default:
+          return 0;
+      }
+    };
+    for (const entry of byFingerprint.values()) entry.frameScore = scoreFrameClaim(entry.sentence);
     const claims = [...byFingerprint.values()]
       .sort((left, right) => left.circularityPenalty - right.circularityPenalty
         || left.metaPenalty - right.metaPenalty
+        || right.frameScore - left.frameScore
         || right.explanatoryValue - left.explanatoryValue
         || right.relevance - left.relevance
         || right.support - left.support
@@ -35806,6 +37081,7 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
           : 'Finding';
         return {
           id: `grounded.claim.${stableLariPreferenceToken(claim.sentence)}`,
+          frameScore: claim.frameScore || 0,
           label,
           body: claim.sentence,
           selection: {
@@ -35831,11 +37107,86 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
       && !comparisonCue.test(claim.body)
       && !hypothesisCue.test(claim.body));
     const comparisonClaim = claims.find(claim => comparisonCue.test(claim.body));
-    const quantitativeClaim = claims.find(claim => /\b\d+(?:\.\d+)?\s*(?:%|percent|milliseconds?|seconds?|minutes?|hours?|bytes?|kilobytes?|megabytes?|gigabytes?|meters?|kilometers?|degrees?|times?)?\b/i.test(claim.body));
+    const quantitativeClaim = (() => {
+      const anyNumbered = claims.find(claim => claimHasNumber(claim.body)) || null;
+      if (!frameSubjectPattern) return anyNumbered;
+      const numbered = claims.filter(claim => frameSubjectPattern.test(claim.body) && claimHasNumber(claim.body));
+      if (!numbered.length) return anyNumbered;
+      // The answering sentence counts the requested thing, so its number sits
+      // nearest the quantity term ("its eight planets" beats "five AU ...
+      // are the planets ... two gas giants"). Sentences that never name the
+      // counted thing keep evidence order as the fallback pool.
+      const numberNearQuantity = body => {
+        if (!quantityOfPattern) return 0;
+        const qtyIdx = body.search(quantityOfPattern);
+        if (qtyIdx < 0) return Infinity;
+        let best = Infinity;
+        const re = new RegExp(`\\b\\d[\\d,]*\\b|${numberWordPattern}`, 'gi');
+        let m;
+        while ((m = re.exec(body)) !== null) best = Math.min(best, Math.abs(m.index - qtyIdx));
+        return best;
+      };
+      const named = numbered.filter(claim => quantityOfPattern && quantityOfPattern.test(claim.body));
+      const pool = named.length ? named : numbered;
+      // Anaphoric openers ("These four planets...") point at prior discourse
+      // and make poor standalone answers; the total-count sentence ("its eight
+      // planets") does not lean on one. Deprioritize them, all else equal.
+      const anaphoric = body => /^\s*(?:these|those|they|them|their)\b/i.test(body) ? 1 : 0;
+      return [...pool].sort((a, b) => anaphoric(a.body) - anaphoric(b.body)
+        || numberNearQuantity(a.body) - numberNearQuantity(b.body))[0] || null;
+    })();
     const hypothesisClaim = claims.find(claim => hypothesisCue.test(claim.body));
-    const definitionPattern = new RegExp(`^\\s*(?:a|an|the)?\\s*${escapePattern(topic)}\\s+(?:is|are|was|were|means|refers to|occurs when|consists of|describes?)\\b`, 'i');
+    const definitionPattern = new RegExp(`^\\s*(?:a|an|the)?\\s*${escapePattern(topic)}\\s*(?:\\([^)]{0,80}\\))?\\s+(?:is|are|was|were|means|refers to|occurs when|consists of|describes?)\\b`, 'i');
     const definitionClaim = claims.find(claim => definitionPattern.test(claim.body));
     const transformationClaim = claims.find(claim => /\b(?:converts?|changes?|transforms?|turns?)\b[\s\S]{1,140}\binto\b/i.test(claim.body));
+    const dateClaim = (() => {
+      if (!frameSubjectPattern) return null;
+      const yearRe = /\b(1[0-9]{3}|20[0-2][0-9])\b/;
+      const dated = claims.filter(claim => frameSubjectPattern.test(claim.body) && yearRe.test(claim.body));
+      if (!dated.length) return null;
+      // The answering sentence dates the event itself, so its year sits near
+      // the event verb ("the fall of the Wall on 9 November 1989"), not in a
+      // subordinate clause about consequences ("...reunification, which took
+      // place in 1990").
+      const verbYearDistance = body => {
+        if (!eventVerbPattern) return 0;
+        const verbIdx = body.search(eventVerbPattern);
+        if (verbIdx < 0) return Infinity;
+        let best = Infinity;
+        const re = new RegExp(yearRe.source, 'g');
+        let m;
+        while ((m = re.exec(body)) !== null) best = Math.min(best, Math.abs(m.index - verbIdx));
+        return best;
+      };
+      const withVerb = dated.filter(claim => verbYearDistance(claim.body) !== Infinity);
+      if (withVerb.length) {
+        return [...withVerb].sort((a, b) => verbYearDistance(a.body) - verbYearDistance(b.body))[0] || null;
+      }
+      // No claim states the event with its verb ("World War II ended...").
+      // Fall back on verb polarity: end-type events are dated by the latest
+      // year on the subject, begin-type by the earliest. ("When did WWII end"
+      // -> 1945, not the 1939 beginning the lead happens to mention first.)
+      const verb = String(claimFrame.eventVerb || '').toLowerCase();
+      const polarity = /^(end|fall|fell|sink|sank|die|died|collapse)$/.test(verb) ? 'end'
+        : /^(begin|began|start|built|founded|born|established|created)$/.test(verb) ? 'begin' : null;
+      if (polarity) {
+        const claimYear = body => {
+          const years = String(body).match(new RegExp(yearRe.source, 'g')) || [];
+          const nums = years.map(y => Number(y)).filter(n => n >= 1000 && n <= 2099);
+          if (!nums.length) return null;
+          return polarity === 'end' ? Math.max(...nums) : Math.min(...nums);
+        };
+        const ranked = dated.map(claim => ({ claim, year: claimYear(claim.body) })).filter(item => item.year !== null);
+        if (ranked.length) {
+          ranked.sort((a, b) => polarity === 'end' ? b.year - a.year : a.year - b.year);
+          return ranked[0].claim;
+        }
+      }
+      return dated[0] || null;
+    })();
+    const officeClaim = (frameSubjectPattern && claimFrame.office)
+      ? claims.find(claim => frameSubjectPattern.test(claim.body) && new RegExp(`\\b${escapePattern(claimFrame.office)}\\b`, 'i').test(claim.body))
+      : null;
     const requestLower = request.toLowerCase();
     // Attribute questions ("what is the capital of X") ask for a property of
     // a subject, not a definition. The attribute term is the word between
@@ -35879,7 +37230,18 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
         return scored[0].claim;
       })()
       : null;
-    const requiredRoles = [
+    // When the question's frame is known it names exactly what is being asked
+    // for, so the required role comes from the frame alone. The regex
+    // heuristics below are the fallback for unframed questions.
+    const frameRequiredRoles = {
+      person: [{ role: 'identity', patterns: ['definition'] }],
+      definition: [{ role: 'definition', patterns: ['definition', 'self_reduction', 'transformation'] }],
+      attribute: [{ role: 'attribute', patterns: ['attribute'] }],
+      quantity: [{ role: 'quantity', patterns: ['quantitative_relation'] }],
+      event_date: [{ role: 'date', patterns: ['dated_event'] }],
+      office_holder: [{ role: 'office', patterns: ['office_holder'] }]
+    };
+    const requiredRoles = frameRequiredRoles[claimFrame.frame] || [
       { role: 'definition', required: /\b(?:define|what is|what are)\b/.test(requestLower), patterns: ['definition', 'self_reduction', 'transformation'] },
       { role: 'attribute', required: attributeTerm !== null, patterns: ['attribute'] },
       { role: 'process', required: /\b(?:how it works|how .* works|process|steps?|sequence)\b/.test(requestLower), patterns: ['process_sequence', 'transformation', 'self_reduction'] },
@@ -35898,6 +37260,8 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
       { pattern: 'process_sequence', claim: processSequenceClaim },
       { pattern: 'competing_hypothesis', claim: hypothesisClaim },
       { pattern: 'cause_effect', claim: causeEffectClaim },
+      { pattern: 'dated_event', claim: dateClaim },
+      { pattern: 'office_holder', claim: officeClaim },
       { pattern: 'comparison', claim: comparisonClaim },
       { pattern: 'quantitative_relation', claim: quantitativeClaim }
     ].filter(component => component.claim)
@@ -35912,6 +37276,11 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     const missingRequestedRoles = requiredRoles
       .filter(role => !semanticComponents.some(component => role.patterns.includes(component.pattern)))
       .map(role => role.role);
+    // A known frame with no claim for its required role means the evidence
+    // cannot answer the question. Say so honestly downstream instead of
+    // composing lore around the topic ("the capital of Narnia" must not be
+    // answered with Narnia plot summary).
+    const unanswerable = requiredRoles.length > 0 && missingRequestedRoles.length > 0;
     const realization = {
       plainLanguage: /\b(?:plain language|beginner|newcomer|novice|without a background|twelve[- ]year[- ]old|12[- ]year[- ]old|child|kid)\b/i.test(request),
       audience: /\b(?:twelve[- ]year[- ]old|12[- ]year[- ]old|child|kid)\b/i.test(request) ? 'young_learner'
@@ -35920,6 +37289,7 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
       tinyExample: /\b(?:tiny|small|simple|concrete)\s+example\b|\bone example\b/i.test(request),
       semanticPattern: patternMatch.pattern,
       groundingClaimId: patternMatch.claim?.id || null,
+      unanswerable,
       requiredSemanticRoles: requiredRoles.map(role => role.role),
       missingRequestedRoles,
       semanticComposition: semanticComponents.map((component, index) => ({
@@ -36050,6 +37420,37 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
         && !topicTerms.some(topicTerm => topicTerm.includes(token) || token.includes(topicTerm)))[0] || null;
     const focusHits = sentence => (focusTerm && sentence.toLowerCase().includes(focusTerm) ? 1 : 0);
     const metaDescription = sentence => /^\s*(?:this|these|it|the following)\b[^.]{0,80}\b(?:list|article|page|disambiguation)\b/i.test(sentence) ? 1 : 0;
+    // Frame-aware ranking: the question's frame says what KIND of sentence
+    // answers it. A person question wants the definitional sentence about the
+    // subject ("X was a ..."); a date question wants a sentence with a year;
+    // a quantity question wants a sentence with a number. Without this the
+    // summary is the article's first sentences, which may never answer what
+    // was asked (Titanic article, lifeboat paragraph, no year).
+    const frame = options.frame && typeof options.frame === 'object' ? options.frame : { frame: 'unknown' };
+    const escapeFramePattern = value => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const frameHits = sentence => {
+      const subject = String(frame.subject || '').trim();
+      if (!subject || frame.frame === 'unknown') return 0;
+      if (!new RegExp(`\\b${escapeFramePattern(subject)}\\b`, 'i').test(sentence)) return 0;
+      switch (frame.frame) {
+        case 'person':
+        case 'definition':
+          return /\b(was|is|were|are)\s+(a|an|the)\b/i.test(sentence) ? 2 : 1;
+        case 'event_date':
+          return /\b(1[0-9]{3}|20[0-2][0-9])\b/.test(sentence) ? 2 : 1;
+        case 'quantity':
+          return /\b\d[\d,]*\b/.test(sentence)
+            || /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen|hundred|thousand|million|billion)\b/i.test(sentence) ? 2 : 1;
+        case 'office_holder': {
+          const office = String(frame.office || '').trim();
+          return office && new RegExp(`\\b${escapeFramePattern(office)}\\b`, 'i').test(sentence) ? 2 : 1;
+        }
+        case 'attribute':
+          return 1;
+        default:
+          return 0;
+      }
+    };
     const sentences = evidenceText
       .split(/(?<=[.!?])\s+/)
       .map(sentence => sentence.trim())
@@ -36070,7 +37471,7 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
           || (Math.min(term.length, focusTerm.length) >= 5 && (term.startsWith(focusTerm) || focusTerm.startsWith(term))));
         return overlap > 0 || focusHit;
       })
-      .map((sentence, index) => ({ sentence, index, focus: focusHits(sentence), meta: metaDescription(sentence) }))
+      .map((sentence, index) => ({ sentence, index, focus: focusHits(sentence) + frameHits(sentence), meta: metaDescription(sentence) }))
       .sort((left, right) => left.meta - right.meta || right.focus - left.focus || left.index - right.index)
       .slice(0, options.maxSentences || 4)
       .map(item => item.sentence);
@@ -36089,7 +37490,8 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     );
     const claimProgram = synthesizeGroundedSemanticClaimProgram(topic, accepted, {
       ...(options.claimProgram || {}),
-      request: options.request || query
+      request: options.request || query,
+      frame: options.frame
     });
     return {
       topic,
@@ -36318,7 +37720,7 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     // such as "explain", "workers", or "faster".
     const evidenceQuery = plan.topic || query;
     const sourceScores = scoreEvidenceSources(evidenceQuery, rawSources, options.sourceScoring || {});
-    const distilled = distillEvidenceToKnowledge(evidenceQuery, sourceScores, { topic: plan.topic, request: query, ...(options.distill || {}) });
+    const distilled = distillEvidenceToKnowledge(evidenceQuery, sourceScores, { topic: plan.topic, request: query, frame: plan.frame, ...(options.distill || {}) });
     if (!distilled.sourceCount || !distilled.summary) {
       return {
         id: `knowledgeAcquisition.${Date.now()}`,
@@ -36443,7 +37845,7 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     return report;
   }
 
-  const api = { infer, reinforce, predictNext, selectTool, learnFromToolObservation, needsTeaching, ingestKnowledge, learnFromRepair, retrainSkillFromFailure, recordTaskOutcome, runExperienceReplay, proposeAgent, registerAgent, learnUserPreference, getUserPreferences, applyUserPreferences, createLearningGoal, approveLearningGoal, rejectLearningGoal, runApprovedLearningJobs, findCuriosityGap, completeLearningGoal, planAutonomousKnowledgeAcquisition, scoreEvidenceSources, extractEvidenceClaims, analyzeSourceAgreement, distillEvidenceToKnowledge, updateExistingKnowledge, buildKnowledgeAcquisitionAudit, runAutonomousKnowledgeAcquisition, inferResearchQuestionsFromGoal, runResearchActionOperator, embedText, embedTextForModel, cosineSimilarity, learnConceptGraph, searchKnowledge, consolidateMemory, calibrateConfidence, planCurriculum, compileSkills, routeCompiledSkill, evaluateAgentFitness, specializeAgents, arbitrateAgentRoute, synthesizeToolAdapter, repairSynthesizedToolAdapter, findReusableSynthesizedTool, evolveSynthesizedTools, runSwarmMission, rankCompiledSkills, composeCompiledSkills, autoComposeSkills, evaluateCompiledSkills, pruneCompiledSkills, runSkillArena, promoteCompiledSkillToAgent, runGrowthTick, runTrainingEpoch, runAutonomousTrainingLoop, scoreTrainingHoldouts, runCheckpointedAutonomousTraining, runLongHorizonGrowthLoop, runContinualLearningCycle, runDomainExpansionCycle, runSelfDirectedExpansionCycle, planAutonomousModelGrowthRoadmap, runAutonomousModelGrowthLoop, runAutonomousModelRoadmapCycles, runAutonomousModelRoadmapPolicyArena, runAutonomousModelGrowthGovernor, runAutonomousModelGrowthGovernorLoop, runAutonomousModelInferenceKernel, runAutonomousModelConversationKernel, runHtmlSwarmModel, runHtmlSwarmModelBatch, extractLariTaskFocus, runLariModel, runLariModelBatch, buildLariModelCard, planLariCapabilityGrowth, selectLariCapabilityGrowthExecutor, synthesizeLariCapabilityGrowthExecutor, repairLariCapabilityGrowthExecutor, promoteLariCapabilityGrowthExecutor, executeLariCapabilityGrowthStrategy, runLariCapabilityGrowthCycle, runLariInstructionFollowingGrowthCycle, synthesizeLariInstructionFollowingAnswer, runLariMathReasoningGrowthCycle, synthesizeLariMathReasoningAnswer, registerLariModalityLane, synthesizeLariModalityGenerator, renderLariImageArtifact, renderLariGameArtifact, renderLariAudioArtifact, evaluateLariModalityArtifact, runLariModalityGrowthCycle, inferLariVisualPromptFeatures, synthesizeLariNativeImageGenerator, renderLariNativeImageArtifact, evaluateLariNativeImageArtifact, repairLariNativeImageGenerator, runLariNativeImageGenerationCore, renderLariUnifiedImageArtifact, evaluateLariUnifiedImageArtifact, runLariUnifiedImageModel, synthesizeLariPhotorealTextureGenerator, renderLariPhotorealTextureArtifact, evaluateLariPhotorealTextureArtifact, createLariVisualSpecialistSwarm, renderLariVisualSpecialistSwarmArtifact, evaluateLariVisualSpecialistSwarmArtifact, repairLariVisualSpecialistSwarm, runLariVisualSpecialistSwarmCycle, generateLariVisualSwarmArenaCandidates, scoreLariVisualSwarmArenaCandidate, runLariVisualSwarmArena, synthesizeLariVisualResearchGenerator, renderLariMapped3DArtifact, evaluateLariVisualResearchArtifact, repairLariVisualResearchGenerator, runLariVisualSelfTeachingCycle, planLariAutonomousResearchTargets, runLariResearchCandidateArena, composeLariMultimodalProduct, evaluateLariMultimodalProduct, repairLariMultimodalProduct, planLariProductGapGrowthTargets, runLariProductGapGrowthClosure, runLariProductFromGrowthMemory, runLariAutonomousProductBuilder, runLariAutonomousProductBuilderBatch, inferLariMultimodalProductRequest, seedLariPromotedMultimodalGenerators, writeLariMultimodalProductWorkspace, runLariAutonomousMultimodalProductCreation, classifyLariUnifiedTaskIntent, classifyLariUnifiedTaskSubintent, registerLariUnifiedTaskSubintent, resolveLariUnifiedTaskSubintent, proposeLariUnifiedTaskSubintentSpec, runLariAutonomousSubintentGrowthCycle, analyzeLariUnifiedKernelGrowthGaps, runLariSelfDirectedSubintentGrowthLoop, runLariLocalModelLaunchLoop, getLariSessionStatus, shouldRunLariSessionGrowth, sendMessageToLari, sendMessageToLariAsync, runLariSessionOperator, runLariAutonomousRequest, classifyLariAutonomousRequest, runLariAutonomousGrowthDaemon, planLariAutonomousGrowthDaemonMissions, scoreLariAutonomousGrowthDaemonState, compileLariSessionOperatorSkills, routeLariSessionOperatorSkill, runLariOperatorSkillArena, runLariAutonomousOperatorLearningLoop, buildLariCapabilityGraph, routeLariCapabilityGraph, buildLariCapabilityGenome, routeLariCapabilityGenome, composeLariCapabilityGenome, evaluateLariCapabilityGenome, composeLariCapabilityGraph, runLariCapabilityProductOperator, inferLariWorkspaceMissionTasks, runLariAutonomousWorkspaceMission, inferLariProjectWorkspacePlan, runLariProjectWorkspaceCreation, runLariProjectBuildReviewRepairLoop, runLariProjectInteractiveValidationLoop, inferLariInteractiveValidationBreadthPlan, runLariProjectInteractiveValidationBreadthCycle, inferLariVisualUiQualityCriticPlan, scoreLariVisualUiQualityEvidence, runLariVisualUiQualityCriticCycle, inferLariNativeCapabilityRetentionPlan, runLariNativeCapabilityRetentionCycle, inferLariFailureRepairMemoryPlan, runLariFailureRepairMemoryCycle, runLariSelfLearningAgendaExecutor, inferLariBackendProjectPlan, runLariBackendApiProjectCreation, inferLariDependencyProjectPlan, runLariDependencyInstallAndPackageCheck, inferLariSelfLearningAgenda, runLariSessionConversation, selectLariUnifiedKernelActivePolicy, runLariUnifiedTaskKernel, runLariUnifiedTaskKernelBatch, reinforceLariUnifiedKernelActivePolicies, scoreLariUnifiedKernelPolicyState, runLariUnifiedKernelPolicyEvolutionLoop, planLariUnifiedKernelSelfImprovement, runLariUnifiedKernelSelfImprovementCycle, runLariUnifiedKernelSelfImprovementLoop, scoreLariUnifiedKernelCoverage, runCheckpointedLariUnifiedKernelSelfImprovementLoop, distillLariUnifiedKernelPolicies, applyLariUnifiedKernelPolicy, runPolicyGuidedLariUnifiedKernelSelfImprovementCycle, generateLariUnifiedKernelPolicyCandidates, runLariUnifiedKernelPolicyArena, runGeneralChat, evaluateGeneralChat, runGeneralChatTrainingCycle, evaluateGeneralIntelligence, runGeneralIntelligenceTrainingCycle, runChatOperatorDecision, executeChatOperatorDecision, evaluateChatOperator, evaluateChatOperatorExecution, executeChatOperatorWithRepair, evaluateChatOperatorRepair, buildChatOperatorTaskGraph, executeChatOperatorTaskGraph, evaluateChatOperatorTaskGraph, promoteTaskGraphToSkill, routeTaskGraphSkill, executeTaskGraphSkill, scoreGraphRun, evolveTaskGraphSkill, runChatOperatorTrainingCycle, defaultFrontierLanguageRegistry, resolveFrontierLanguageRegistry, registerFrontierLanguageLane, synthesizeFrontierLanguageLane, inferFrontierLanguageLaneSpecFromWorkspace, detectFrontierLanguage, classifyFrontierReplacementMode, discoverFrontierWorkspace, inferFrontierReplacementMissionSteps, runFrontierReplacementCycle, runFrontierCodingRepairLoop, runFrontierPatchStrategyArena, evolveFrontierPatchStrategy, classifyChatIntent, runKernelCycle, runSelfPlayTraining, defaultInputsForEvent };
+  const api = { infer, reinforce, predictNext, selectTool, frameAnswerSatisfied, learnFromToolObservation, needsTeaching, ingestKnowledge, learnFromRepair, retrainSkillFromFailure, recordTaskOutcome, runExperienceReplay, proposeAgent, registerAgent, learnUserPreference, getUserPreferences, applyUserPreferences, createLearningGoal, approveLearningGoal, rejectLearningGoal, runApprovedLearningJobs, findCuriosityGap, completeLearningGoal, planAutonomousKnowledgeAcquisition, scoreEvidenceSources, extractEvidenceClaims, analyzeSourceAgreement, distillEvidenceToKnowledge, updateExistingKnowledge, buildKnowledgeAcquisitionAudit, runAutonomousKnowledgeAcquisition, inferResearchQuestionsFromGoal, runResearchActionOperator, embedText, embedTextForModel, cosineSimilarity, learnConceptGraph, searchKnowledge, consolidateMemory, calibrateConfidence, planCurriculum, compileSkills, routeCompiledSkill, evaluateAgentFitness, specializeAgents, arbitrateAgentRoute, synthesizeToolAdapter, repairSynthesizedToolAdapter, findReusableSynthesizedTool, evolveSynthesizedTools, runSwarmMission, rankCompiledSkills, composeCompiledSkills, autoComposeSkills, evaluateCompiledSkills, pruneCompiledSkills, runSkillArena, promoteCompiledSkillToAgent, runGrowthTick, runTrainingEpoch, runAutonomousTrainingLoop, scoreTrainingHoldouts, runCheckpointedAutonomousTraining, runLongHorizonGrowthLoop, runContinualLearningCycle, runDomainExpansionCycle, runSelfDirectedExpansionCycle, planAutonomousModelGrowthRoadmap, runAutonomousModelGrowthLoop, runAutonomousModelRoadmapCycles, runAutonomousModelRoadmapPolicyArena, runAutonomousModelGrowthGovernor, runAutonomousModelGrowthGovernorLoop, runAutonomousModelInferenceKernel, runAutonomousModelConversationKernel, runHtmlSwarmModel, runHtmlSwarmModelBatch, extractLariTaskFocus, runLariModel, runLariModelBatch, buildLariModelCard, planLariCapabilityGrowth, selectLariCapabilityGrowthExecutor, synthesizeLariCapabilityGrowthExecutor, repairLariCapabilityGrowthExecutor, promoteLariCapabilityGrowthExecutor, executeLariCapabilityGrowthStrategy, runLariCapabilityGrowthCycle, runLariInstructionFollowingGrowthCycle, synthesizeLariInstructionFollowingAnswer, runLariMathReasoningGrowthCycle, synthesizeLariMathReasoningAnswer, registerLariModalityLane, synthesizeLariModalityGenerator, renderLariImageArtifact, renderLariGameArtifact, renderLariAudioArtifact, evaluateLariModalityArtifact, runLariModalityGrowthCycle, inferLariVisualPromptFeatures, synthesizeLariNativeImageGenerator, renderLariNativeImageArtifact, evaluateLariNativeImageArtifact, repairLariNativeImageGenerator, runLariNativeImageGenerationCore, renderLariUnifiedImageArtifact, evaluateLariUnifiedImageArtifact, runLariUnifiedImageModel, synthesizeLariPhotorealTextureGenerator, renderLariPhotorealTextureArtifact, evaluateLariPhotorealTextureArtifact, createLariVisualSpecialistSwarm, renderLariVisualSpecialistSwarmArtifact, evaluateLariVisualSpecialistSwarmArtifact, repairLariVisualSpecialistSwarm, runLariVisualSpecialistSwarmCycle, generateLariVisualSwarmArenaCandidates, scoreLariVisualSwarmArenaCandidate, runLariVisualSwarmArena, synthesizeLariVisualResearchGenerator, renderLariMapped3DArtifact, evaluateLariVisualResearchArtifact, repairLariVisualResearchGenerator, runLariVisualSelfTeachingCycle, planLariAutonomousResearchTargets, runLariResearchCandidateArena, composeLariMultimodalProduct, evaluateLariMultimodalProduct, repairLariMultimodalProduct, planLariProductGapGrowthTargets, runLariProductGapGrowthClosure, runLariProductFromGrowthMemory, runLariAutonomousProductBuilder, runLariAutonomousProductBuilderBatch, inferLariMultimodalProductRequest, seedLariPromotedMultimodalGenerators, writeLariMultimodalProductWorkspace, runLariAutonomousMultimodalProductCreation, classifyLariUnifiedTaskIntent, classifyLariUnifiedTaskSubintent, registerLariUnifiedTaskSubintent, resolveLariUnifiedTaskSubintent, proposeLariUnifiedTaskSubintentSpec, runLariAutonomousSubintentGrowthCycle, analyzeLariUnifiedKernelGrowthGaps, runLariSelfDirectedSubintentGrowthLoop, runLariLocalModelLaunchLoop, getLariSessionStatus, shouldRunLariSessionGrowth, sendMessageToLari, sendMessageToLariAsync, runLariSessionOperator, runLariAutonomousRequest, classifyLariAutonomousRequest, runLariAutonomousGrowthDaemon, planLariAutonomousGrowthDaemonMissions, scoreLariAutonomousGrowthDaemonState, compileLariSessionOperatorSkills, routeLariSessionOperatorSkill, runLariOperatorSkillArena, runLariAutonomousOperatorLearningLoop, buildLariCapabilityGraph, routeLariCapabilityGraph, buildLariCapabilityGenome, routeLariCapabilityGenome, composeLariCapabilityGenome, evaluateLariCapabilityGenome, composeLariCapabilityGraph, runLariCapabilityProductOperator, inferLariWorkspaceMissionTasks, runLariAutonomousWorkspaceMission, inferLariProjectWorkspacePlan, runLariProjectWorkspaceCreation, runLariProjectBuildReviewRepairLoop, runLariProjectInteractiveValidationLoop, inferLariInteractiveValidationBreadthPlan, runLariProjectInteractiveValidationBreadthCycle, inferLariVisualUiQualityCriticPlan, scoreLariVisualUiQualityEvidence, runLariVisualUiQualityCriticCycle, inferLariNativeCapabilityRetentionPlan, runLariNativeCapabilityRetentionCycle, inferLariFailureRepairMemoryPlan, runLariFailureRepairMemoryCycle, runLariSelfLearningAgendaExecutor, inferLariBackendProjectPlan, runLariBackendApiProjectCreation, inferLariDependencyProjectPlan, runLariDependencyInstallAndPackageCheck, inferLariSelfLearningAgenda, runLariSessionConversation, selectLariUnifiedKernelActivePolicy, runLariUnifiedTaskKernel, runLariUnifiedTaskKernelBatch, reinforceLariUnifiedKernelActivePolicies, scoreLariUnifiedKernelPolicyState, runLariUnifiedKernelPolicyEvolutionLoop, planLariUnifiedKernelSelfImprovement, runLariUnifiedKernelSelfImprovementCycle, runLariUnifiedKernelSelfImprovementLoop, scoreLariUnifiedKernelCoverage, runCheckpointedLariUnifiedKernelSelfImprovementLoop, distillLariUnifiedKernelPolicies, applyLariUnifiedKernelPolicy, runPolicyGuidedLariUnifiedKernelSelfImprovementCycle, generateLariUnifiedKernelPolicyCandidates, runLariUnifiedKernelPolicyArena, runGeneralChat, evaluateGeneralChat, runGeneralChatTrainingCycle, evaluateGeneralIntelligence, runGeneralIntelligenceTrainingCycle, runChatOperatorDecision, executeChatOperatorDecision, evaluateChatOperator, evaluateChatOperatorExecution, executeChatOperatorWithRepair, evaluateChatOperatorRepair, buildChatOperatorTaskGraph, executeChatOperatorTaskGraph, evaluateChatOperatorTaskGraph, promoteTaskGraphToSkill, routeTaskGraphSkill, executeTaskGraphSkill, scoreGraphRun, evolveTaskGraphSkill, runChatOperatorTrainingCycle, defaultFrontierLanguageRegistry, resolveFrontierLanguageRegistry, registerFrontierLanguageLane, synthesizeFrontierLanguageLane, inferFrontierLanguageLaneSpecFromWorkspace, detectFrontierLanguage, classifyFrontierReplacementMode, discoverFrontierWorkspace, inferFrontierReplacementMissionSteps, runFrontierReplacementCycle, runFrontierCodingRepairLoop, runFrontierPatchStrategyArena, evolveFrontierPatchStrategy, classifyChatIntent, runKernelCycle, runSelfPlayTraining, defaultInputsForEvent };
   api.canonicalLariKnowledgeRecords = canonicalLariKnowledgeRecords;
   api.synthesizeGroundedSemanticClaimProgram = synthesizeGroundedSemanticClaimProgram;
   api.consolidateGroundedClaimLearning = consolidateGroundedClaimLearning;

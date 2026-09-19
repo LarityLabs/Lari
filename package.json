@@ -68,12 +68,12 @@
     "lari:test-progressive-relaxation-binding": "node scripts/test_lari_default_progressive_relaxation_binding.js",
     "lari:cross-modal-scene:seal": "node scripts/seal_lari_cross_modal_scene_curriculum.js",
     "lari:cross-modal-scene:build": "node scripts/build_lari_cross_modal_scene_candidate.js",
-  "lari:cross-modal-scene:qualify": "node scripts/qualify_lari_cross_modal_scene_candidate.js",
-  "lari:test-agentic-authority-contract": "node scripts/test_lari_agentic_authority_contract.js",
-  "lari:test-automatic-isolated-reproducer": "node scripts/test_lari_automatic_isolated_reproducer.js",
-  "lari:cross-domain-composition": "node scripts/run_lari_cross_domain_composition_candidate.js",
-  "lari:validate-cross-domain-composition": "node scripts/validate_lari_cross_domain_composition_candidate.js",
-  "lari:test-autonomous-uncertainty-research": "node scripts/test_lari_autonomous_uncertainty_research.js",
+    "lari:cross-modal-scene:qualify": "node scripts/qualify_lari_cross_modal_scene_candidate.js",
+    "lari:test-agentic-authority-contract": "node scripts/test_lari_agentic_authority_contract.js",
+    "lari:test-automatic-isolated-reproducer": "node scripts/test_lari_automatic_isolated_reproducer.js",
+    "lari:cross-domain-composition": "node scripts/run_lari_cross_domain_composition_candidate.js",
+    "lari:validate-cross-domain-composition": "node scripts/validate_lari_cross_domain_composition_candidate.js",
+    "lari:test-autonomous-uncertainty-research": "node scripts/test_lari_autonomous_uncertainty_research.js",
     "lari:test-public-surface-uncertainty-convergence": "node scripts/run_lari_public_surface_uncertainty_convergence.js",
     "lari:test-learning-lifecycle": "node scripts/test_lari_learning_lifecycle.js",
     "test": "npm run lari:contamination-check && npm run lari:inventory:check && npm run lari:test-sealed-artifacts && npm run lari:test-site-selection && npm run lari:test-search-ordering && npm run lari:test-suspect-equivalent && npm run lari:test-compression && npm run lari:test-primitive-promotion && npm run lari:test-synthesis && npm run lari:test-agentic-loop && npm run lari:test-growth && npm run lari:test-explanation && npm run lari:test-self-knowledge && npm run lari:test-phrasing && npm run lari:test-repair-gaps && npm run lari:test-research-capability && npm run lari:test-research-claims && npm run lari:test-execution-claims && npm run lari:test-capability-dispatch && npm run lari:test-feedback && npm run lari:test-chat-language-frontier && npm run lari:test-stateful-chat-language && npm run lari:test-preference-firewall && npm run lari:test-recap-language && npm run lari:test-recursive-field-generator && npm run lari:test-domain-neurogenesis && npm run lari:test-language-primitive && npm run lari:test-semantic-ast-autogenesis && npm run lari:test-referential-relation-autogenesis && npm run lari:test-unknown-repository-acquisition && npm run lari:test-primitive-invention && npm run lari:test-generated-primitive-family && npm run lari:test-build && npm run lari:test-focused-pytest-selectors && npm run lari:test-diagnostic-hypothesis-grounding && npm run lari:test-semantic-mutation-neurogenesis && npm run lari:test-resident-timeout && npm run lari:truth && npm run lari:smoke",
@@ -111,8 +111,8 @@
     "lari:research-conversation-corpus": "node scripts/run_lari_conversation_corpus_research.js",
     "lari:prepare-oasst2-corpus": "python scripts/prepare_lari_oasst2_corpus.py --source D:\\LariData\\OpenAssistant\\oasst2\\2023-11-05_oasst2_ready.messages.jsonl.gz --output D:\\LariData\\OpenAssistant\\lari-filtered-v1",
     "lari:train-native-decoder": "python scripts/train_lari_native_decoder.py --data D:\\LariData\\OpenAssistant\\lari-filtered-v1 --out D:\\LariData\\OpenAssistant\\lari-native-decoder-v1",
-  "lari:test-stateful-chat-language": "node scripts/test_lari_stateful_chat_language.js",
-  "lari:test-domain-separation": "node scripts/test_lari_front_door_domain_separation.js",
+    "lari:test-stateful-chat-language": "node scripts/test_lari_stateful_chat_language.js",
+    "lari:test-domain-separation": "node scripts/test_lari_front_door_domain_separation.js",
     "lari:test-public-chat-coding-convergence": "node scripts/test_lari_public_chat_coding_convergence.js",
     "lari:rehearse-public-surface-uncertainty-promotion": "node scripts/run_lari_public_surface_uncertainty_promotion_rehearsal.js",
     "lari:test-recap-language": "node scripts/test_lari_recap_language.js",
@@ -526,7 +526,8 @@
   "type": "commonjs",
   "dependencies": {
     "computational-english": "file:../computational-english",
-    "playwright": "^1.60.0"
+    "playwright": "^1.60.0",
+    "wordnet-db": "^3.1.14"
   },
   "devDependencies": {
     "typescript": "^7.0.2"

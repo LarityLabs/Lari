@@ -7,7 +7,9 @@ const os = require('os');
 
 const ROOT = path.resolve(__dirname, '..');
 const PROD_MODEL = path.join(ROOT, 'models', 'lari', 'current', 'swarm-model.json');
-const TEST_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'lari-checkpoint-test-'));
+const TEST_BASE = path.join(__dirname, '..', '..', 'tmp');
+fs.mkdirSync(TEST_BASE, { recursive: true });
+const TEST_DIR = fs.mkdtempSync(path.join(TEST_BASE, 'lari-checkpoint-test-'));
 const TEST_MODEL = path.join(TEST_DIR, 'swarm-model.json');
 
 fs.copyFileSync(PROD_MODEL, TEST_MODEL);

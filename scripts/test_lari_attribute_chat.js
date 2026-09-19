@@ -57,7 +57,7 @@ async function main() {
   check('definition intact', /assyri/i.test(definition) && !BOILERPLATE.test(definition), definition.slice(0, 80));
 
   const greeting = await ask('hey');
-  check('greeting intact', /ask me anything/i.test(greeting), greeting.slice(0, 60));
+  check('greeting intact', /yo\.|i am here|i am local/i.test(greeting), greeting.slice(0, 60));
 
   const learned = await ask('what have you learned');
   check('self-knowledge intact', learned.length > 20 && !/not.*enough local memory/i.test(learned), learned.slice(0, 60));

@@ -1,0 +1,18 @@
+[Unit]
+Description=Lari Telegram bridge (multi-user Laris)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lari
+WorkingDirectory=/srv/lari/lari-telegram
+ExecStart=/usr/bin/node /srv/lari/lari-telegram/index.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+# Token and paths come from here (not in the unit file):
+EnvironmentFile=/srv/lari/lari-telegram/.env
+
+[Install]
+WantedBy=multi-user.target

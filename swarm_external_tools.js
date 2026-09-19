@@ -42,6 +42,15 @@
 
   function extractLearningTopic(task = '') {
     const text = String(task || '').trim();
+    // A parsed factual frame yields the clean research subject directly.
+    // This is the primary fix for whole-question topics ("who was Albert
+    // Einstein" -> "Albert Einstein").
+    try {
+      const frame = parseFactualFrame(text);
+      if (frame && frame.frame !== 'unknown' && frame.subject) {
+        return String(frame.subject).slice(0, 120);
+      }
+    } catch (_) { /* fall through to the legacy patterns */ }
     const patterns = [
       /\b(?:research(?:\s+and\s+learn)?|study|look\s+up|find\s+out|teach\s+yourself)\s+(?:about\s+|the\s+topic\s+of\s+)?(.+?)(?:\?|$)/i,
       /\b(?:what is|what are|who is|who are|define|explain|teach me about|tell me about|learn about)\s+(.+?)(?:\?|$)/i,
@@ -83,6 +92,147 @@
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '_')
       .replace(/^_+|_+$/g, '') || 'unknown';
+  }
+
+  // Parse a factual question into its frame: what KIND of thing is being asked
+  // (a person, a date, a quantity, an office holder, an attribute value, a
+  // definition) and the clean SUBJECT the answer is about. Research must be
+  // aimed at the subject ("Albert Einstein"), never at the whole interrogative
+  // sentence ("who was Albert Einstein") -- sending the sentence to an
+  // encyclopedia title endpoint lands on fuzzy near-misses (Hans Albert
+  // Einstein, a WWII aircraft list) that then get retained as if they were
+  // answers. Returns { frame, subject, attribute, office, quantityOf, role,
+  // interrogative }; frame is 'unknown' when nothing matches.
+  // Event nominals: "when did the Berlin Wall fall" is answered crisply by
+  // the event's own article ("Fall of the Berlin Wall": "The Berlin Wall fell
+  // on 9 November 1989..."), while the subject article narrates the event
+  // across sentences without ever dating it in one. Null when the verb has no
+  // conventional nominal -- the subject article is then the only target.
+  function eventNominalTopic(eventVerb = '', subject = '') {
+    const nominals = {
+      fall: 'Fall of', end: 'End of', sink: 'Sinking of', die: 'Death of',
+      collapse: 'Collapse of'
+    };
+    const nominal = nominals[String(eventVerb || '').toLowerCase()];
+    const clean = String(subject || '').trim();
+    return nominal && clean ? `${nominal} ${clean}` : null;
+  }
+  function parseFactualFrame(query = '') {
+    const text = String(query || '').trim();
+    const stripPunct = value => String(value || '').replace(/[?.!]+$/g, '').replace(/\s+/g, ' ').trim();
+    const cleanSubject = value => stripPunct(value).replace(/^(?:the|a|an)\s+/i, '');
+    const unknown = () => ({ frame: 'unknown', subject: null, attribute: null, office: null, quantityOf: null, role: null, interrogative: null, eventVerb: null, eventNominal: null, officeNominal: null });
+    // Split "World War II end" / "the Titanic sink" into subject + event verb.
+    const splitEventSubject = value => {
+      const stripped = stripPunct(value);
+      const verb = stripped.match(/\s+(end|ended|begin|began|begun|start|started|happen|happened|occur|occurred|sink|sank|sunk|die|died|fall|fell|collapse|collapsed)$/i);
+      const rawSubject = verb ? stripped.slice(0, verb.index).trim() : stripped;
+      return {
+        subject: rawSubject.replace(/^(?:the|a|an)\s+/i, ''),
+        rawSubject,
+        eventVerb: verb ? verb[1].toLowerCase() : null
+      };
+    };
+    let match;
+    // Office holder first: "who is the president of France" is not a generic
+    // person question. "is" = current holder, "was" (or a year) = historical.
+    match = text.match(/^\s*who\s+(is|was)\s+the\s+(president|prime minister|chancellor|king|queen|pope|mayor|governor)\s+of\s+(.+?)(?:\s+in\s+(\d{4}))?\s*[?.!]*$/i);
+    if (match) {
+      const office = match[2].toLowerCase();
+      const officeSubject = cleanSubject(match[3]);
+      // The office's own article ("President of France") names the holder
+      // crisply in its lead; the subject article usually does not.
+      const officeNominal = office && officeSubject
+        ? `${office.charAt(0).toUpperCase() + office.slice(1)} of ${officeSubject}` : null;
+      return {
+        frame: 'office_holder', office, subject: officeSubject,
+        role: match[1].toLowerCase() === 'is' && !match[4] ? 'current' : 'historical',
+        year: match[4] || null, interrogative: 'who', attribute: null, quantityOf: null, eventVerb: null,
+        officeNominal
+      };
+    }
+    // Attribute: "what is the capital of X".
+    match = text.match(/^\s*(?:what|which)\s+(?:is|are|was|were)\s+the\s+(capital|currency|population|area|language|national language)\s+of\s+(.+?)\s*[?.!]*$/i);
+    if (match) {
+      return {
+        frame: 'attribute', attribute: match[1].toLowerCase(), subject: cleanSubject(match[2]),
+        role: 'value', interrogative: 'what', office: null, quantityOf: null, eventVerb: null
+      };
+    }
+    // Quantity.
+    match = text.match(/^\s*how\s+many\s+(.+?)\s+does\s+(?:a|an|the)\s+(.+?)\s+have\s*[?.!]*$/i);
+    if (match) {
+      return {
+        frame: 'quantity', quantityOf: stripPunct(match[1]), subject: cleanSubject(match[2]),
+        role: 'count', interrogative: 'how many', attribute: null, office: null, eventVerb: null
+      };
+    }
+    match = text.match(/^\s*how\s+many\s+(.+?)\s+do\s+(.+?)\s+have\s*[?.!]*$/i);
+    if (match) {
+      return {
+        frame: 'quantity', quantityOf: stripPunct(match[1]), subject: cleanSubject(match[2]),
+        role: 'count', interrogative: 'how many', attribute: null, office: null, eventVerb: null
+      };
+    }
+    match = text.match(/^\s*how\s+many\s+(.+?)\s+are\s+in\s+(.+?)\s*[?.!]*$/i);
+    if (match) {
+      return {
+        frame: 'quantity', quantityOf: stripPunct(match[1]), subject: cleanSubject(match[2]),
+        role: 'count', interrogative: 'how many', attribute: null, office: null, eventVerb: null
+      };
+    }
+    match = text.match(/^\s*how\s+many\s+(.+?)\s+are\s+there\s*[?.!]*$/i);
+    if (match) {
+      return {
+        frame: 'quantity', quantityOf: stripPunct(match[1]), subject: stripPunct(match[1]),
+        role: 'count', interrogative: 'how many', attribute: null, office: null, eventVerb: null
+      };
+    }
+    // Event date / year.
+    match = text.match(/^\s*in\s+what\s+year\s+did\s+(.+?)\s*[?.!]*$/i);
+    if (match) {
+      const split = splitEventSubject(match[1]);
+      return {
+        frame: 'event_date', subject: split.subject, eventVerb: split.eventVerb,
+        role: 'year', interrogative: 'what year', attribute: null, office: null, quantityOf: null,
+        eventNominal: eventNominalTopic(split.eventVerb, split.rawSubject)
+      };
+    }
+    match = text.match(/^\s*when\s+did\s+(.+?)\s*[?.!]*$/i);
+    if (match) {
+      const split = splitEventSubject(match[1]);
+      return {
+        frame: 'event_date', subject: split.subject, eventVerb: split.eventVerb,
+        role: 'date', interrogative: 'when', attribute: null, office: null, quantityOf: null,
+        eventNominal: eventNominalTopic(split.eventVerb, split.rawSubject)
+      };
+    }
+    match = text.match(/^\s*when\s+was\s+(.+?)\s+(built|founded|born|established|created|released|published)\s*[?.!]*$/i);
+    if (match) {
+      return {
+        frame: 'event_date', subject: cleanSubject(match[1]), eventVerb: match[2].toLowerCase(),
+        role: 'date', interrogative: 'when', attribute: null, office: null, quantityOf: null,
+        eventNominal: eventNominalTopic(match[2], stripPunct(match[1]))
+      };
+    }
+    // Person: "who was X". Note "who was" -- the old topic extractor only knew
+    // "who is"/"who are" and sent the whole question to the encyclopedia.
+    match = text.match(/^\s*who\s+(?:was|is|were|are)\s+(.+?)\s*[?.!]*$/i);
+    if (match) {
+      return {
+        frame: 'person', subject: cleanSubject(match[1]),
+        role: 'identity', interrogative: 'who', attribute: null, office: null, quantityOf: null, eventVerb: null
+      };
+    }
+    // Definition: "what is X".
+    match = text.match(/^\s*(?:what|which)\s+(?:was|were|is|are)\s+(.+?)\s*[?.!]*$/i);
+    if (match) {
+      return {
+        frame: 'definition', subject: cleanSubject(match[1]),
+        role: 'definition', interrogative: 'what', attribute: null, office: null, quantityOf: null, eventVerb: null
+      };
+    }
+    return unknown();
   }
 
   async function resolveKnowledge(task, options = {}) {
@@ -242,6 +392,29 @@
     if (technical) return technical;
     const sources = [];
     let canonicalTopic = lookupTopic;
+    // Event-date and office-holder questions: the event/office's own article
+    // ("Fall of the Berlin Wall", "President of France") states the date or
+    // holder crisply in its lead; the subject article usually does not. Fetch
+    // the nominal first so its sentences rank, then keep the subject article
+    // as supporting context. Failure falls back silently.
+    try {
+      const frame = parseFactualFrame(task);
+      const nominalTopic = (frame && (frame.eventNominal || frame.officeNominal)) || null;
+      if (nominalTopic && nominalTopic !== lookupTopic) {
+        const nominalKnowledge = await resolveKnowledge(nominalTopic, { ...options, fetch: fetchImpl });
+        if (nominalKnowledge && nominalKnowledge.summary) {
+          sources.push({
+            title: nominalKnowledge.topic,
+            url: nominalKnowledge.sourceUrl,
+            sourceType: 'encyclopedia_reference',
+            text: nominalKnowledge.summary,
+            trust: nominalKnowledge.confidence || 0.78,
+            updatedAt: nominalKnowledge.observedAt || null
+          });
+          canonicalTopic = nominalKnowledge.topic || nominalTopic;
+        }
+      }
+    } catch (_) { /* subject article remains the evidence */ }
 
     try {
       const knowledge = await resolveKnowledge(lookupTopic, { ...options, fetch: fetchImpl });
@@ -530,7 +703,7 @@
     return `I learned <strong>${knowledge.topic}</strong> and stored it as <code>${knowledge.skillId}</code>. ${knowledge.summary}${source}`;
   }
 
-  const api = { parseWeatherLocation, resolveWeather, formatWeatherAnswer, weatherCodeSummary, extractLearningTopic, resolveKnowledge, resolveResearchEvidence, resolveTechnicalEvidence, technicalResearchRequest, formatKnowledgeAnswer };
+  const api = { parseWeatherLocation, resolveWeather, formatWeatherAnswer, weatherCodeSummary, extractLearningTopic, parseFactualFrame, resolveKnowledge, resolveResearchEvidence, resolveTechnicalEvidence, technicalResearchRequest, formatKnowledgeAnswer };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   globalScope.SwarmExternalTools = api;
 })(typeof globalThis !== 'undefined' ? globalThis : window);

@@ -15,3 +15,6 @@ learned_discourse_operators.json
 
 *.log
 .DS_Store
+
+# Secrets (bot tokens, API keys) never belong in the repo.
+.env
