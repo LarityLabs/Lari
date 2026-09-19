@@ -6654,7 +6654,7 @@ function attachSwarmModelRuntime(globalScope) {
     }
 
     if (intent === 'planning' && !adviceOnly && !/next/i.test(answer) && typeof __retainedConsultHit === 'undefined') {
-      answer += '\n- Next: convert the strongest step into a benchmarked operator so the swarm can repeat it and improve.';
+      answer += '\n- Next: convert the strongest step into a repeatable operator so the swarm can reuse it and improve.';
     }
     const selfContainedConversationalAct = /\b(?:story|tale|disagree|downside|drawback|too much coffee|brain is vibrating|overcaffeinated|caffeine)\b/i.test(message);
     if (confidence < 0.45 && !conversationalIntent && intent !== 'greeting' && intent !== 'preference' && !selfContainedConversationalAct && typeof __codeVerified === 'undefined' && typeof __retainedConsultHit === 'undefined') {
