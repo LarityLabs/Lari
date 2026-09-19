@@ -1,10 +1,16 @@
 # Dependency and runtime-state excludes
 node_modules/
 
-# The model is the retained state (swarm-model.json, ~35MB, rewritten on every
-# learned turn). It is machine-local and does not belong in git history.
-# Place it at models/lari/current/swarm-model.json to run.
-models/
+# Model policy (2026-09-19): the single current model file IS tracked at
+# models/lari/current/swarm-model.json. On each release, overwrite that file
+# with the newest model and commit (replacing the old). Everything else under
+# models/ (checkpoints, backups, staging) stays out of git.
+models/*
+!models/lari/
+models/lari/*
+!models/lari/current/
+models/lari/current/*
+!models/lari/current/swarm-model.json
 
 # Consolidation workspaces, staging areas, and timestamped model backups.
 consolidation/
