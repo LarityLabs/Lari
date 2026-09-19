@@ -220,6 +220,36 @@ function attachSwarmModelRuntime(globalScope) {
     return INTERNAL_EVAL_RECORD_TEXT.test(String(value || ''));
   }
 
+  // Choke-point filter (fix-round 4, bug 1): internal benchmark/eval/arena
+  // records must NEVER be served as chat answers, no matter which routing
+  // path produced the text. This is enforced at formatLariSessionAnswer —
+  // the single place where a kernel record becomes the public session
+  // answer — so every skill answerTemplate/description/summary route is
+  // covered by construction, including future ones. (The answer-repair-skill
+  // path served such records verbatim; per-path filters cannot keep up.)
+  //
+  // Signature: screenLariChatAnswerForInternalRecords(answer, record)
+  //   -> { blocked: boolean, answer: string }
+  // Exported on the runtime API so a follow-up build can screen
+  // retained-knowledge values at answer time.
+  function screenLariChatAnswerForInternalRecords(answer, record = {}) {
+    const text = String(answer || '').trim();
+    if (!text) return { blocked: false, answer: text };
+    // Only chat answers are a leak surface: research/code/product answers are
+    // fixed canned strings that cannot carry skill text. An absent intent is
+    // treated as a leak surface (fail closed).
+    if (record && record.intent && record.intent !== 'chat') return { blocked: false, answer: text };
+    if (!isInternalEvalRecordText(text)) return { blocked: false, answer: text };
+    // Blocked: fall back to normal chat behavior — a retention acknowledgment
+    // for "remember"-style turns, the honest low-memory deflection
+    // otherwise. Never empty, never the leaked record.
+    const prompt = String(record?.prompt || '');
+    const fallbackAnswer = /\bremember\b/i.test(prompt)
+      ? 'I can remember that and use it in future answers.'
+      : 'I do not have enough local memory to answer that strongly yet.';
+    return { blocked: true, answer: fallbackAnswer };
+  }
+
   function ensureSemanticMemory(model) {
     if (!model.semanticMemory) {
       model.semanticMemory = {
@@ -4423,6 +4453,8 @@ function attachSwarmModelRuntime(globalScope) {
       || /\bwho (?:are you|created you|made you|built you|designed you)\b(?:\s+(?:really|exactly))?[?!. ,]*$/.test(trimmed)
       || /\bwhat are you[?!. ,]*$/.test(trimmed)
       || /\bwhat is lari[?!. ,]*$/.test(trimmed)
+      || /\bhow do you (?:say|pronounce) (?:your|the) name\b/.test(text)
+      || /\bpronounce (?:your|the) name\b/.test(text)
       || /\btell me about yourself\b/.test(text)) return 'self_identity';
     // Goodbye.
     if (/^(?:bye|goodbye|see\s+(?:you|ya)(?:\s+later)?|later|goodnight|good\s+night|take\s+care)[!. ,]*$/.test(trimmed)) return 'goodbye';
@@ -4441,8 +4473,9 @@ function attachSwarmModelRuntime(globalScope) {
     // Follow-ups: continue the current thread. Needs conversation context.
     if (/^(?:tell\s+me\s+more|go\s+on|and\s+then|what\s+else|keep\s+going|elaborate|expand(?:\s+on\s+(?:that|it))?|continue)[?!. ,]*$/.test(trimmed)
       || /\bwhat\s+about\s+(?:that|it|this)\b/.test(text)) return 'follow_up';
-    // Thanks.
-    if (/^(?:thanks|thank\s+you|thx|ty|appreciated?|much\s+obliged)[!. ,]*$/.test(trimmed)) return 'thanks';
+    // Thanks. Trailing address terms ("thanks man") and intensifiers
+    // ("thanks a lot") are still thanks, not open chat.
+    if (/^(?:thanks|thank\s+you|thx|ty|appreciated?|much\s+obliged)(?:\s+(?:a\s+lot|so\s+much))?(?:\s+(?:man|dude|bro|brother|buddy|boss|fam|friend))?[!. ,]*$/.test(trimmed)) return 'thanks';
     // Bare reactions: laughter, acknowledgment, confusion, hype.
     if (/^(?:lol|lmao|lmfao|rofl|haha+|hehe+|lolz)[!. ,]*$/.test(trimmed)) return 'reaction_laugh';
     if (/^(?:nice|cool|sweet|dope|sick|fire|based|w|W)[!. ,]*$/.test(trimmed)) return 'reaction_hype';
@@ -4538,6 +4571,283 @@ function attachSwarmModelRuntime(globalScope) {
       };
     }
     return null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // "Remember that" teaching extraction + retention (2026-09-19).
+  //
+  // The tutoring session proved a gap: "remember that" turns were
+  // acknowledged ("I can remember that and use it in future answers") but
+  // matched no extractor, so nothing was ever written — the acknowledgment
+  // was a lie. Teachings captured here become durable typed knowledge
+  // records (kind 'taught_fact') in lariLearnedRecords, which the
+  // answer-time consultation layer (consultRetainedAnswerKnowledge) and the
+  // existing knowledge search can both serve.
+  //
+  // Supported shapes:
+  //   "the thesis is the swarm is the model. remember that"   (fact first)
+  //   "remember that the sky is blue"                          (fact after)
+  // "remember that" alone, questions, and sub-3-word fragments are not
+  // facts and return null.
+  // ---------------------------------------------------------------------------
+  function extractTaughtFactFromChat(message = '') {
+    const text = String(message || '').trim();
+    if (!text || /[?]\s*$/.test(text)) return null;
+    let factText = null;
+    let m = /^(.*?)[.!?\n]?\s*\bremember\s+(?:that|this)\b\s*[.!?\s]*$/i.exec(text);
+    if (m && m[1].trim()) {
+      factText = m[1].trim();
+    } else if ((m = /\bremember\s+(?:that|this)\b\s*[:,]?\s*(.+?)[.!?\s]*$/i.exec(text)) && m[1].trim()) {
+      factText = m[1].trim();
+    }
+    if (!factText) return null;
+    if (factText.split(/\s+/).filter(Boolean).length < 3) return null;
+    // Topic: the subject of the teaching — the phrase before the first
+    // copula ("the thesis is the swarm is the model" -> "thesis";
+    // "Lari is short for Singularity" -> "Lari"). Fallback: leading
+    // content words.
+    let topic = null;
+    const copula = /^(.+?)\s+(?:is|are|was|were|means?|stands?\s+for|refers?\s+to)\s+/i.exec(factText);
+    if (copula) topic = copula[1].replace(/^(?:the|a|an)\s+/i, '').trim();
+    if (!topic) {
+      const content = baseTokens(factText).filter(token => token.length > 3);
+      topic = content.slice(0, 3).join(' ');
+    }
+    if (!topic) return null;
+    let summary = factText.replace(/[.!?\s]+$/g, '').trim();
+    if (!summary) return null;
+    if (!/[.!?]$/.test(summary)) summary += '.';
+    summary = summary.charAt(0).toUpperCase() + summary.slice(1);
+    return { topic: topic.slice(0, 80), summary: summary.slice(0, 500) };
+  }
+
+  // Durable write for a "remember that" teaching. Stored as a typed
+  // knowledge record (kind 'taught_fact', confidence 0.9): explicit user
+  // statements start confident; contradictions are resolved newer-wins by
+  // record order (records are prepended, consultation iterates newest
+  // first). Idempotent on identical re-teach (stable id -> update in
+  // place); a reworded teaching of the same topic adds a new record and
+  // the newer one wins at consult time.
+  function retainTaughtFactFromChat(model, fact = {}, options = {}) {
+    if (!model || typeof model !== 'object') return null;
+    const topic = String(fact.topic || '').trim();
+    const summary = String(fact.summary || '').trim();
+    if (!topic || !summary) return null;
+    model.lariLearnedRecords = model.lariLearnedRecords || { schemaVersion: 1, records: [] };
+    model.lariLearnedRecords.records = model.lariLearnedRecords.records || [];
+    const now = new Date().toISOString();
+    const userScope = String(options.userScope || 'default');
+    const id = `lari.learned.fact.${stableLariPreferenceToken(`${userScope}|${topic.toLowerCase()}|${summary.toLowerCase()}`)}`;
+    const existing = model.lariLearnedRecords.records.find(record => record?.id === id) || null;
+    const record = {
+      ...(existing || {}),
+      id,
+      type: 'knowledge',
+      status: 'active',
+      normalizedTriggers: [...new Set([
+        ...(existing?.normalizedTriggers || []),
+        ...baseTokens(topic).filter(token => token.length > 2)
+      ])].slice(0, 12),
+      payload: {
+        ...(existing?.payload || {}),
+        kind: 'taught_fact',
+        topic,
+        summary,
+        confidence: 0.9,
+        source: 'explicit_remember_that',
+        explicit: true,
+        durable: true,
+        userScope,
+        taughtAt: existing?.payload?.taughtAt || now,
+        updatedAt: now
+      },
+      provenance: {
+        ...(existing?.provenance || {}),
+        creationSource: 'chat_remember_that',
+        verification: 'explicit_user_statement'
+      }
+    };
+    model.lariLearnedRecords.records = [
+      record,
+      ...model.lariLearnedRecords.records.filter(item => item?.id !== id)
+    ];
+    return record;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Answer-time consultation layer (2026-09-19).
+  //
+  // The tutoring session proved the write side works (the miner completes
+  // instruction pairs; "remember that" is now actually retained) while the
+  // read side did not exist: nothing retained was ever consulted at answer
+  // time, so a taught "thanks"->"anytime" still answered the default thanks
+  // reply. This layer closes the loop. Consult order:
+  //   1. completed instruction pairs (miner pairs with via='instruction') —
+  //      an explicit user dictate outranks everything else retained;
+  //   2. retained taught facts, then stored preferences;
+  //   3. induced success operators (lari.learned.operator.chat.success.*).
+  //
+  // It only fills gaps: native lanes (time, math, self_identity evidence,
+  // routed procedures, knowledge evidence) keep precedence — callers invoke
+  // it only where the answer would otherwise be a canned low-memory
+  // fallback, a vague deflection, or a default phatic reply that a dictate
+  // overrides. Every candidate value is screened by
+  // screenLariChatAnswerForInternalRecords before it can become an answer
+  // (defense in depth: retained knowledge must never become a leak vector).
+  // Pure local retained state — zero external calls.
+  //
+  // Thresholds (documented and justified):
+  // - Instruction pairs: EXACT normalized-stimulus match. Normalization is
+  //   lowercase + punctuation collapse (the miner's stimulusKey) plus
+  //   stripping of trailing address terms (man/dude/bro/...) and
+  //   intensifiers (a lot/so much) — the same variant classes the thanks
+  //   intent classifier already tolerates, so "thanks man" hits a "thanks"
+  //   pair. Only via='instruction' pairs are consulted: a dictate is a
+  //   stated rule, not statistical evidence, so matching is exact rather
+  //   than fuzzy — a fuzzy match would let "when I say thanks just say
+  //   anytime" hijack "thanks for the fish". Non-instruction pairs
+  //   (recovery/retry/approval) describe repaired failures, not standing
+  //   rules, and are never served unprompted.
+  // - Taught facts: active status, confidence >= 0.5 (taught facts are
+  //   stored at 0.9; anything decayed or superseded below 0.5 is stale
+  //   junk and stays out), at least one shared content token with the
+  //   question, AND at least half of the fact's topic tokens covered by
+  //   the question. The topic-coverage gate mirrors the chat lane's
+  //   strict relevance bar (a majority of topic roots must match) in a
+  //   looser form suited to one-phrase topics: one shared generic word
+  //   cannot hijack an unrelated turn. No expiry: an explicit "remember
+  //   that" is durable by design; contradictions resolve newer-wins.
+  // - Stored preferences: consulted ONLY for explicit "what's my X"
+  //   questions naming a stored preference key. A preference is normally
+  //   about HOW to answer (tone), not what to answer; serving it as a
+  //   general answer would be wrong.
+  // - Success operators: normalized stimulus match against the operator's
+  //   stimulusKey or any recorded variant, plus evidenceCount >= 3 — the
+  //   induction bar itself (operators only exist at >= 3 uncorrected
+  //   repetitions), so this gate is inherent, not an extra knob.
+  // ---------------------------------------------------------------------------
+  function normalizeConsultStimulus(text = '') {
+    let value = String(text || '').toLowerCase()
+      .replace(/[^a-z0-9' ]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    // Strip the trailing address-term / intensifier variants the thanks
+    // intent already tolerates, so "thanks man" hits a "thanks" pair.
+    for (let pass = 0; pass < 2; pass++) {
+      const next = value
+        .replace(/\s+(?:man|dude|bro|brother|buddy|boss|fam|friend)$/, '')
+        .replace(/\s+(?:a\s+lot|so\s+much)$/, '');
+      if (next === value) break;
+      value = next;
+    }
+    return value;
+  }
+
+  function screenConsultedValue(value, intent, prompt, source, sourceId) {
+    // The leak filter treats only the 'chat' surface as a leak surface;
+    // passing the internal sub-intent label ('open_chat', 'thanks', ...)
+    // would silently disable it, so screen as a chat answer. The sub-intent
+    // is preserved in the returned source metadata for traceability.
+    const screened = screenLariChatAnswerForInternalRecords(value, { intent: 'chat', prompt });
+    if (screened.blocked) {
+      // Blocked: serve the filter's safe fallback, never the original.
+      return { answer: screened.answer, source: 'leak_filter', blocked: true, sourceId: sourceId || null };
+    }
+    return { answer: screened.answer, source, blocked: false, sourceId: sourceId || null };
+  }
+
+  function consultInstructionPairs(model, message = '', intent = 'open_chat', prompt = '') {
+    const state = model?.lariDiscourseMiner;
+    const pairs = Array.isArray(state?.pairs) ? state.pairs : [];
+    const target = normalizeConsultStimulus(message);
+    if (!target) return null;
+    // Newest first: a re-taught dictate wins over an older one.
+    for (let i = pairs.length - 1; i >= 0; i--) {
+      const pair = pairs[i];
+      if (!pair || pair.via !== 'instruction') continue;
+      if (normalizeConsultStimulus(pair.prompt) !== target) continue;
+      const value = String(pair.correctedAnswer || '').trim();
+      if (!value) continue;
+      return screenConsultedValue(value, intent, prompt || message, 'instruction_pair', `miner_pair:${i}`);
+    }
+    return null;
+  }
+
+  function consultTaughtFacts(model, message = '', intent = 'open_chat', prompt = '') {
+    const records = model?.lariLearnedRecords?.records || [];
+    const msgTokens = new Set(baseTokens(message));
+    if (!msgTokens.size) return null;
+    // Records are prepended on write: iteration order is newest first, so a
+    // re-taught fact wins over an older one on the same topic.
+    for (const record of records) {
+      if (!record || record.status !== 'active') continue;
+      const payload = record.payload || {};
+      if (record.type !== 'knowledge' || payload.kind !== 'taught_fact') continue;
+      if (Number(payload.confidence ?? 1) < 0.5) continue;
+      const topicTokens = [...new Set(baseTokens(payload.topic || ''))];
+      const summaryTokens = [...new Set(baseTokens(payload.summary || ''))];
+      const factTokens = new Set([...topicTokens, ...summaryTokens]);
+      const shared = [...factTokens].filter(token => msgTokens.has(token));
+      if (!shared.length) continue;
+      const topicCovered = topicTokens.filter(token => msgTokens.has(token)).length;
+      if (topicTokens.length && topicCovered / topicTokens.length < 0.5) continue;
+      const value = String(payload.summary || '').trim();
+      if (!value) continue;
+      return screenConsultedValue(value, intent, prompt || message, 'taught_fact', record.id || null);
+    }
+    return null;
+  }
+
+  function consultStoredPreferences(model, message = '', intent = 'open_chat', prompt = '') {
+    const match = String(message || '').match(/\bwhat(?:'s| is) my ([a-z][a-z0-9 _-]{1,40})/i);
+    if (!match) return null;
+    const wanted = slugPreferenceKey(match[1]);
+    const prefs = getUserPreferences(model, 'general', {});
+    const hit = prefs.find(item => slugPreferenceKey(String(item?.key || '')) === wanted);
+    const value = String(hit?.value || '').trim();
+    if (!value) return null;
+    return screenConsultedValue(
+      `Your stored ${String(hit.key).replace(/_/g, ' ')} preference: ${value}.`,
+      intent, prompt || message, 'stored_preference', hit.id || null);
+  }
+
+  function consultSuccessOperators(model, message = '', intent = 'open_chat', prompt = '') {
+    const state = model?.lariDiscourseMiner;
+    const operators = Array.isArray(state?.successOperators) ? state.successOperators : [];
+    const target = normalizeConsultStimulus(message);
+    if (!target) return null;
+    for (let i = operators.length - 1; i >= 0; i--) {
+      const op = operators[i];
+      if (!op || !String(op.id || '').startsWith('lari.learned.operator.chat.success.')) continue;
+      // The induction bar is 3 uncorrected repetitions; operators only exist
+      // at evidenceCount >= 3, so this minimum is inherent.
+      if (Number(op.evidenceCount || 0) < 3) continue;
+      const stimuli = [op.stimulusKey, ...(op.stimuli || [])].filter(Boolean);
+      if (!stimuli.some(stimulus => normalizeConsultStimulus(stimulus) === target)) continue;
+      const value = String(op.responseExample || '').trim();
+      if (!value) continue;
+      return screenConsultedValue(value, intent, prompt || message, 'success_operator', op.id || null);
+    }
+    return null;
+  }
+
+  function consultRetainedAnswerKnowledge(model, message = '', intent = 'open_chat', options = {}) {
+    // Consult order: instruction pairs -> taught facts -> stored
+    // preferences -> success operators. Never throws into the caller.
+    try {
+      const prompt = options.prompt ?? message;
+      const pair = consultInstructionPairs(model, message, intent, prompt);
+      if (pair) return pair;
+      if (!options.skipFacts) {
+        const fact = consultTaughtFacts(model, message, intent, prompt);
+        if (fact) return fact;
+        const pref = consultStoredPreferences(model, message, intent, prompt);
+        if (pref) return pref;
+      }
+      return consultSuccessOperators(model, message, intent, prompt);
+    } catch (_) {
+      return null;
+    }
   }
 
   // Open-chat support: detect a vague request that names no concrete target
@@ -5725,13 +6035,21 @@ function attachSwarmModelRuntime(globalScope) {
         }
       }
     } else if (intent === 'thanks') {
-      const tone = conversationalTone;
-      answer = tone === 'blunt' ? 'Yep.'
-        : tone === 'professional' ? 'You are welcome. Let me know if you need anything else.'
-        : tone === 'concise' ? 'Anytime.'
-        : tone === 'calm' ? 'Of course. I am here if you need anything.'
-        : tone === 'vulgar' ? 'Damn right. I am the shit. What else?'
-        : pickVariant(['Anytime. That is what I am here for.', 'No problem. What is next?', 'You got it.'], String(message));
+      // Answer-time consultation: an explicit instruction ("when I say
+      // thanks just say 'anytime'") outranks the default phatic reply — the
+      // user's stated rule wins over the default thanks answer.
+      const instructedThanks = consultRetainedAnswerKnowledge(model, message, intent, { prompt: message });
+      if (instructedThanks) {
+        answer = instructedThanks.answer;
+      } else {
+        const tone = conversationalTone;
+        answer = tone === 'blunt' ? 'Yep.'
+          : tone === 'professional' ? 'You are welcome. Let me know if you need anything else.'
+          : tone === 'concise' ? 'Anytime.'
+          : tone === 'calm' ? 'Of course. I am here if you need anything.'
+          : tone === 'vulgar' ? 'Damn right. I am the shit. What else?'
+          : pickVariant(['Anytime. That is what I am here for.', 'No problem. What is next?', 'You got it.'], String(message));
+      }
     } else if (intent === 'reaction_laugh') {
       const tone = conversationalTone;
       answer = tone === 'vulgar' ? 'Right?? I am fucking hilarious.'
@@ -5791,15 +6109,42 @@ function attachSwarmModelRuntime(globalScope) {
       } else {
         answer = 'I can remember that and use it in future answers.';
       }
-    } else if (intent === 'self_identity' && !evidence.length && !routeText) {
-      // No retained identity record matched; answer from stable self-knowledge.
-      answer = 'LARI stands for Local Autonomous Recursive Intelligence. I am Lari, pronounced "Larry" — a local AI built by Greg Betti. I run entirely on this machine, learn by retaining verified procedures, and never call an external model for my answers.';
+    } else if (intent === 'self_identity') {
+      // Identity questions merge retained identity knowledge with the stable
+      // default, in both directions: a retained fact ("Lari is short for
+      // Singularity") never displaces the acronym/he-him/Larry line, and the
+      // default never displaces a genuine retained identity teaching. This
+      // branch intentionally fires whether or not evidence matched, because
+      // the old evidence-bullet path dropped the acronym entirely when a
+      // retained fact matched.
+      // he/him and the "Larry" pronunciation are always included so the
+      // answer is stable no matter which prompt reached this branch.
+      const defaultIdentity = 'LARI stands for Local Autonomous Recursive Intelligence. I am Lari (he/him), pronounced "Larry" — a local AI built by Greg Betti. I run entirely on this machine, learn by retaining verified procedures, and never call an external model for my answers.';
+      const consultedIdentity = consultRetainedAnswerKnowledge(model, message, intent, { prompt: message });
+      if (consultedIdentity && consultedIdentity.source === 'instruction_pair') {
+        // An explicit dictate replaces the default outright.
+        answer = consultedIdentity.answer;
+      } else if (consultedIdentity && consultedIdentity.source === 'leak_filter') {
+        // The filter blocked a retained value: serve its safe fallback.
+        answer = consultedIdentity.answer;
+      } else {
+        const identityBits = [];
+        if (consultedIdentity) identityBits.push(consultedIdentity.answer);
+        // Retained identity evidence (knowledge records / routed skill)
+        // folds in, deduplicated; evidence is already relevance-filtered and
+        // internal-record-filtered above.
+        for (const sentence of [...evidence, routeText]) {
+          if (sentence && !identityBits.includes(sentence)) identityBits.push(sentence);
+        }
+        identityBits.push(defaultIdentity);
+        answer = identityBits.join(' ');
+      }
     } else if (intent === 'open_chat' && !evidence.length && !routeText) {
       // Nothing retained matches and no procedure routed: acknowledge a blunt
       // correction, ask one clarifying question when the request is vague,
       // otherwise deflect honestly with varied phrasing instead of the
       // identical low-memory line every turn.
-      const bluntRejection = /^(naw|nah|nope|wrong|incorrect)\b/i.test(String(message || '').trim());
+      const bluntRejection = /^(naw|nah|nope|wrong|incorrect)\b|^no[.,!?]/i.test(String(message || '').trim());
       if (bluntRejection) {
         // Rotate acknowledgments so a repeated correction never gets the
         // identical line twice in a row.
@@ -5808,7 +6153,13 @@ function attachSwarmModelRuntime(globalScope) {
         // Detection semantics unchanged; phrasing rotates across repeats.
         answer = fuzzyClarifyVague(model, message);
       } else {
-        answer = fuzzyRotate(model, 'fuzzyDeflection', OPEN_CHAT_DEFLECTIONS);
+        // Answer-time consultation: a retained instruction pair, taught
+        // fact, or success operator rescues the turn from the deflection.
+        // Blunt corrections and vague requests above keep precedence.
+        const consultedOpenChat = consultRetainedAnswerKnowledge(model, message, intent, { prompt: message });
+        answer = consultedOpenChat
+          ? consultedOpenChat.answer
+          : fuzzyRotate(model, 'fuzzyDeflection', OPEN_CHAT_DEFLECTIONS);
       }
     } else if (evidence.length || routeText) {
       const lead = intent === 'planning'
@@ -5874,7 +6225,17 @@ function attachSwarmModelRuntime(globalScope) {
           answer = __codeTaught.answer;
           var __codeVerified = true;
         } else {
-          answer = 'I do not have enough local memory to answer that strongly yet. I can still reason about it, but the model should learn supporting facts or run a tool before treating the answer as reliable.';
+          // Last-resort consultation (2026-09-19): a retained instruction
+          // pair, taught fact, or success operator is better than the canned
+          // low-memory line. Native lanes never reach this branch (they
+          // answer through their own routes), so this cannot hijack them.
+          const consultedFallback = consultRetainedAnswerKnowledge(model, message, intent, { prompt: message });
+          if (consultedFallback) {
+            answer = consultedFallback.answer;
+            var __retainedConsultHit = true;
+          } else {
+            answer = 'I do not have enough local memory to answer that strongly yet. I can still reason about it, but the model should learn supporting facts or run a tool before treating the answer as reliable.';
+          }
         }
       }
     }
@@ -5883,7 +6244,7 @@ function attachSwarmModelRuntime(globalScope) {
       answer += '\n- Next: convert the strongest step into a benchmarked operator so the swarm can repeat it and improve.';
     }
     const selfContainedConversationalAct = /\b(?:story|tale|disagree|downside|drawback|too much coffee|brain is vibrating|overcaffeinated|caffeine)\b/i.test(message);
-    if (confidence < 0.45 && !conversationalIntent && intent !== 'greeting' && intent !== 'preference' && !selfContainedConversationalAct && typeof __codeVerified === 'undefined') {
+    if (confidence < 0.45 && !conversationalIntent && intent !== 'greeting' && intent !== 'preference' && !selfContainedConversationalAct && typeof __codeVerified === 'undefined' && typeof __retainedConsultHit === 'undefined') {
       answer += '\n\nConfidence is low because this is not well covered in local memory yet.';
     }
 
@@ -5923,6 +6284,15 @@ function attachSwarmModelRuntime(globalScope) {
     const learnedPreference = extractPreferenceFromChat(message);
     if (learnedPreference) learnUserPreference(model, {
       ...learnedPreference,
+      userScope: resolveLariPreferenceUserScope(model, options)
+    });
+    // "Remember that" teachings are durable facts, not just an
+    // acknowledgment: retain them as typed knowledge records so the
+    // answer-time consultation layer can serve them on later turns. The
+    // retention is what makes "I can remember that and use it in future
+    // answers" true.
+    const taughtFact = extractTaughtFactFromChat(message);
+    if (taughtFact) retainTaughtFactFromChat(model, taughtFact, {
       userScope: resolveLariPreferenceUserScope(model, options)
     });
     const hits = searchKnowledge(model, message, { minScore: options.minMemoryScore ?? 0 });
@@ -13966,7 +14336,12 @@ function attachSwarmModelRuntime(globalScope) {
   }
 
   function isLariTimePrompt(prompt = '') {
-    return /\bwhat time is it\b/i.test(String(prompt || ''));
+    const text = String(prompt || '');
+    if (/\bwhat time is it\b/i.test(text)) return true;
+    // "whats the time" / "what's the time" / "what the time": phatic time
+    // questions. Anchored to the end of the message so knowledge questions
+    // like "what is the time complexity of quicksort" never route here.
+    return /\bwhat(?:'s|s)?\s+the\s+time[?!. ,]*$/.test(text.trim().toLowerCase());
   }
 
   // Place name -> IANA timezone. US states resolve to their capital's zone;
@@ -23485,6 +23860,12 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
   function formatLariSessionAnswer(record, result, context = {}) {
     const prompt = String(record?.prompt || '').toLowerCase();
     const output = String(record?.outputText || '').trim();
+    // Choke point (fix-round 4, bug 1): no internal benchmark/eval/arena
+    // record may leave as a chat answer, whatever routing path produced it.
+    // When blocked, the turn falls back to a normal chat behavior — never an
+    // empty or broken answer, never the leaked record.
+    const screened = screenLariChatAnswerForInternalRecords(output || String(result?.answer || ''), record);
+    if (screened.blocked) return screened.answer;
     // A grounded answer outranks a canned one.
     //
     // Everything below this point returns fixed strings chosen by intent, which is how "what did you
@@ -38258,6 +38639,11 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
       catch (_) { return []; }
     }, runLariSessionOperator, runLariAutonomousRequest, classifyLariAutonomousRequest, runLariAutonomousGrowthDaemon, planLariAutonomousGrowthDaemonMissions, scoreLariAutonomousGrowthDaemonState, compileLariSessionOperatorSkills, routeLariSessionOperatorSkill, runLariOperatorSkillArena, runLariAutonomousOperatorLearningLoop, buildLariCapabilityGraph, routeLariCapabilityGraph, buildLariCapabilityGenome, routeLariCapabilityGenome, composeLariCapabilityGenome, evaluateLariCapabilityGenome, composeLariCapabilityGraph, runLariCapabilityProductOperator, inferLariWorkspaceMissionTasks, runLariAutonomousWorkspaceMission, inferLariProjectWorkspacePlan, runLariProjectWorkspaceCreation, runLariProjectBuildReviewRepairLoop, runLariProjectInteractiveValidationLoop, inferLariInteractiveValidationBreadthPlan, runLariProjectInteractiveValidationBreadthCycle, inferLariVisualUiQualityCriticPlan, scoreLariVisualUiQualityEvidence, runLariVisualUiQualityCriticCycle, inferLariNativeCapabilityRetentionPlan, runLariNativeCapabilityRetentionCycle, inferLariFailureRepairMemoryPlan, runLariFailureRepairMemoryCycle, runLariSelfLearningAgendaExecutor, inferLariBackendProjectPlan, runLariBackendApiProjectCreation, inferLariDependencyProjectPlan, runLariDependencyInstallAndPackageCheck, inferLariSelfLearningAgenda, runLariSessionConversation, selectLariUnifiedKernelActivePolicy, runLariUnifiedTaskKernel, runLariUnifiedTaskKernelBatch, reinforceLariUnifiedKernelActivePolicies, scoreLariUnifiedKernelPolicyState, runLariUnifiedKernelPolicyEvolutionLoop, planLariUnifiedKernelSelfImprovement, runLariUnifiedKernelSelfImprovementCycle, runLariUnifiedKernelSelfImprovementLoop, scoreLariUnifiedKernelCoverage, runCheckpointedLariUnifiedKernelSelfImprovementLoop, distillLariUnifiedKernelPolicies, applyLariUnifiedKernelPolicy, runPolicyGuidedLariUnifiedKernelSelfImprovementCycle, generateLariUnifiedKernelPolicyCandidates, runLariUnifiedKernelPolicyArena, runGeneralChat, evaluateGeneralChat, runGeneralChatTrainingCycle, evaluateGeneralIntelligence, runGeneralIntelligenceTrainingCycle, runChatOperatorDecision, executeChatOperatorDecision, evaluateChatOperator, evaluateChatOperatorExecution, executeChatOperatorWithRepair, evaluateChatOperatorRepair, buildChatOperatorTaskGraph, executeChatOperatorTaskGraph, evaluateChatOperatorTaskGraph, promoteTaskGraphToSkill, routeTaskGraphSkill, executeTaskGraphSkill, scoreGraphRun, evolveTaskGraphSkill, runChatOperatorTrainingCycle, defaultFrontierLanguageRegistry, resolveFrontierLanguageRegistry, registerFrontierLanguageLane, synthesizeFrontierLanguageLane, inferFrontierLanguageLaneSpecFromWorkspace, detectFrontierLanguage, classifyFrontierReplacementMode, discoverFrontierWorkspace, inferFrontierReplacementMissionSteps, runFrontierReplacementCycle, runFrontierCodingRepairLoop, runFrontierPatchStrategyArena, evolveFrontierPatchStrategy, classifyChatIntent, runKernelCycle, runSelfPlayTraining, defaultInputsForEvent };
   api.canonicalLariKnowledgeRecords = canonicalLariKnowledgeRecords;
+  // Answer-time consultation layer: exported so tests (and future chat
+  // surfaces) can consult retained knowledge directly.
+  api.consultRetainedAnswerKnowledge = consultRetainedAnswerKnowledge;
+  api.extractTaughtFactFromChat = extractTaughtFactFromChat;
+  api.retainTaughtFactFromChat = retainTaughtFactFromChat;
   api.synthesizeGroundedSemanticClaimProgram = synthesizeGroundedSemanticClaimProgram;
   api.consolidateGroundedClaimLearning = consolidateGroundedClaimLearning;
   api.canonicalLariGeneralChatProcedureRecords = canonicalLariGeneralChatProcedureRecords;
@@ -38309,6 +38695,8 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
   api.runLariRealWorldTaskMarket = runLariRealWorldTaskMarket;
   api.runLariUnseenWorkspaceGauntlet = runLariUnseenWorkspaceGauntlet;
   api.polishLariFrontierChatAnswer = polishLariFrontierChatAnswer;
+  api.isInternalEvalRecordText = isInternalEvalRecordText;
+  api.screenLariChatAnswerForInternalRecords = screenLariChatAnswerForInternalRecords;
   api.lariAnswerNeedsVisibleRepair = lariAnswerNeedsVisibleRepair;
   api.repairLariVisibleAnswer = repairLariVisibleAnswer;
   api.lariAnswerNeedsQualityRepair = lariAnswerNeedsQualityRepair;

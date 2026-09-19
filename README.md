@@ -17,6 +17,13 @@ it does not control). Chat is under active development (September 2026): open-ch
 fuzzy phatic layer (one-word changes no longer break it), a discourse miner that actually learns
 from real conversation (corrections, instructional directives, and repeated successful exchanges
 induce retained operators), a nightly consolidation loop, and bounded checkpoint pruning.
+A choke-point filter (`screenLariChatAnswerForInternalRecords`, enforced in
+`formatLariSessionAnswer`) guarantees no internal benchmark/eval record can ever be served as a
+chat answer through any skill route. An answer-time consultation layer means teaching works:
+completed instruction pairs, taught facts, stored preferences, and success operators are consulted
+where the answer would otherwise be canned — "when I say thanks just say 'anytime'" is honored on
+the next `thanks`, and "the thesis is the swarm is the model. remember that" is recalled when
+asked about the thesis.
 
 ## Layout
 
@@ -33,11 +40,13 @@ npm install
 # The model (the retained state) lives at models/lari/current/swarm-model.json and IS tracked:
 # exactly one current model is committed; a newer model overwrites it.
 # Checkpoint backups and staging models stay gitignored.
-node scripts/test_lari_open_chat.js       # open-chat routing + fuzzy layer: 119/119 expected
+node scripts/test_lari_open_chat.js       # open-chat routing + fuzzy layer: 132/132 expected
 node scripts/test_lari_discourse_miner.js # discourse miner: 31/31 expected
 node scripts/test_lari_miner_learning.js  # miner induces from real convo, rejects junk: 30/30 expected
 node scripts/test_lari_miner_legacy_migration.js   # legacy miner state migrates cleanly: 22/22 expected
 node scripts/test_lari_chat_no_internal_leak.js    # internal records never answer chat: 19/19 expected
+node scripts/test_lari_leak_chokepoint.js       # choke-point filter: 38/38 expected
+node scripts/test_lari_answer_consultation.js   # answer-time consultation: 18/18 expected
 node scripts/test_lari_attribute_chat.js  # chat regression: 8/8 expected
 node scripts/test_lari_learn_retention.js # research -> retain -> recall: 10/10 expected
 node scripts/run_lari_consolidation.js    # nightly consolidation (dry-run supported)

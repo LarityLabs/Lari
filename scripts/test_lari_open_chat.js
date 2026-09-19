@@ -228,6 +228,48 @@ async function main() {
     /discussed/i.test(episodes[0].summary) && !/nevermind/i.test(episodes[0].summary),
     String(episodes[0].summary).slice(0, 90));
 
+  // --- session-4 gaps (2026-09-19): time pattern, thanks widening, blunt
+  // "no." corrections, byte-stable identity, name-pronunciation routing. ---
+  const gapsModel = {};
+  // Gap 1: "whats the time" must reach the native time lane like
+  // "what time is it" does.
+  const whatsTheTime = await ask(gapsModel, 'whats the time');
+  check('gap1: "whats the time" reaches the time lane',
+    /It's \d{1,2}:\d{2}/.test(whatsTheTime), whatsTheTime.slice(0, 60));
+  check('gap1: "what time is it" still reaches the time lane',
+    /It's \d{1,2}:\d{2}/.test(await ask(gapsModel, 'what time is it')));
+  // Gap 2: "thanks man" (and "thanks a lot") hit the thanks intent.
+  check('gap2: "thanks man" -> thanks',
+    runtime.classifyChatIntent('thanks man') === 'thanks');
+  check('gap2: "thanks a lot" -> thanks',
+    runtime.classifyChatIntent('thanks a lot') === 'thanks');
+  const thanksMan = await ask(gapsModel, 'thanks man');
+  check('gap2: "thanks man" gets a thanks answer, not the dodge',
+    !CANNED.test(thanksMan) && /anytime|no problem|you got it|welcome|yep/i.test(thanksMan), thanksMan.slice(0, 60));
+  // Gap 3: blunt "no." corrections acknowledge instead of deflecting.
+  const noGoal = await ask(gapsModel, 'no. the goal is the swarm is the model');
+  check('gap3: "no. the goal is ..." is acknowledged as a blunt correction',
+    !CANNED.test(noGoal) && /fair|missed|after|bad|again|not it/i.test(noGoal), noGoal.slice(0, 60));
+  const nawGoal = await ask(gapsModel, 'naw. the goal is the swarm is the model');
+  check('gap3: "naw. the goal is ..." still acknowledged',
+    !CANNED.test(nawGoal) && /fair|missed|after|bad|again|not it/i.test(nawGoal), nawGoal.slice(0, 60));
+  // Gap 4: identity answer is byte-stable and always carries he/him + "Larry".
+  const soWho1 = await ask(gapsModel, 'so who are you');
+  const soWho2 = await ask(gapsModel, 'so who are you');
+  check('gap4: "so who are you" is byte-stable across repeats', soWho1 === soWho2, soWho1.slice(0, 60));
+  check('gap4: identity answer always includes he/him',
+    /he\/him/.test(soWho1), soWho1.slice(0, 80));
+  check('gap4: identity answer always includes the "Larry" pronunciation',
+    /pronounced "Larry"/.test(soWho1), soWho1.slice(0, 80));
+  // Gap 5: name-pronunciation rephrasings route to the identity branch.
+  check('gap5: "how do you say your name" -> self_identity',
+    runtime.classifyChatIntent('how do you say your name') === 'self_identity');
+  check('gap5: "how do you pronounce your name" -> self_identity',
+    runtime.classifyChatIntent('how do you pronounce your name') === 'self_identity');
+  const sayName = await ask(gapsModel, 'how do you say your name');
+  check('gap5: "how do you say your name" answers with the identity answer',
+    /pronounced "Larry"/.test(sayName) && /he\/him/.test(sayName) && !CANNED.test(sayName), sayName.slice(0, 80));
+
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed) { console.log('failures:', failures.join(', ')); process.exit(1); }
 }
