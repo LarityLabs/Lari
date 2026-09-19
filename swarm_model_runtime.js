@@ -4869,6 +4869,173 @@ function attachSwarmModelRuntime(globalScope) {
     return null;
   }
 
+  // ---------------------------------------------------------------------------
+  // Soft consultation relevance (2026-09-19, Fix B): paraphrase-robust
+  // matching for consultTaughtFacts.
+  //
+  // The hard relevance bar (exact shared content token + >=50% topic
+  // coverage) proved paraphrase-brittle in tutoring session 6 (R8): a stored
+  // 4-step debugging fact shared ZERO content tokens with "what are the
+  // four steps for handling problems", so a fact that was plainly retained
+  // got the low-memory deflection. The soft pass runs only when the hard
+  // pass matched nothing, newest-first, and scores each candidate:
+  //   exact non-subject token overlap .......... +1 per token (cap 3)
+  //   stem overlap (ing/ed/ueing + doubled
+  //     consonant via stemSubjectTerm) ........ +1 per token (cap 3)
+  //   WordNet synonym overlap (the question's
+  //     words expanded via define()) .......... +1 per token (cap 3)
+  //   shared content-word bigram .............. +2 per bigram (cap 2)
+  //   ordinal/count structural match ("what are
+  //     the four steps" vs a 4-step enumeration) +3
+  // Score >= 2 matches. A question token counts once no matter how many
+  // lexical signals hit it.
+  //
+  // Layer-3 anti-bullying is preserved, not softened: EVERY signal is
+  // computed on non-subject tokens only. Subject tokens are stripped from
+  // both the question and the fact before scoring, and a question left with
+  // no non-subject tokens scores exactly 0 — so a bare-subject question
+  // ("tell me about Greg") can never match a fact whose only shared token
+  // is a subject token (the session-5 "greg"/home-server shape), no matter
+  // how the thresholds move.
+  // ---------------------------------------------------------------------------
+  const SOFT_TAUGHT_FACT_THRESHOLD = 2;
+
+  const SOFT_WORD_NUMBERS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+
+  // Cached WordNet synonym expansion: word -> Set of base tokens (and
+  // their stems) appearing in any synonym of any sense. Degrades to the
+  // empty set when the dictionary is unavailable; never throws.
+  function softSynonymTokens(word, cache) {
+    const key = String(word || '').toLowerCase();
+    if (cache.has(key)) return cache.get(key);
+    const out = new Set();
+    try {
+      if (nodeWordNetCapability && typeof nodeWordNetCapability.define === 'function') {
+        for (const sense of (nodeWordNetCapability.define(key) || [])) {
+          for (const syn of (sense.synonyms || [])) {
+            for (const tok of baseTokens(String(syn).replace(/_/g, ' '))) {
+              out.add(tok);
+              out.add(stemSubjectTerm(tok));
+            }
+          }
+        }
+      }
+    } catch (_) { /* synonym signal degrades to zero, never breaks chat */ }
+    cache.set(key, out);
+    return out;
+  }
+
+  // Ordered content tokens with subject tokens stripped (for bigram
+  // matching): stripping BEFORE forming bigrams keeps "home server"
+  // adjacent in "tell me about Greg's home server".
+  function softOrderedTokens(text, subjectTokens) {
+    return String(text || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .map(token => token.replace(/s$/, ''))
+      .filter(token => token.length > 2 && !STOPWORDS.has(token) && !subjectTokens.has(token));
+  }
+
+  function softBigramSet(tokens) {
+    const out = new Set();
+    for (let i = 0; i < tokens.length - 1; i++) out.add(tokens[i] + ' ' + tokens[i + 1]);
+    return out;
+  }
+
+  // "what are the four steps" -> 4. Word numbers one..ten plus digits.
+  function softQuestionStepCount(message) {
+    const m = /\b(one|two|three|four|five|six|seven|eight|nine|ten|\d{1,2})\s+(steps?|stages?|phases?|rules?|parts?)\b/i
+      .exec(String(message || ''));
+    if (!m) return 0;
+    const raw = m[1].toLowerCase();
+    return SOFT_WORD_NUMBERS[raw] || parseInt(raw, 10) || 0;
+  }
+
+  // Count the items of an ordered enumeration in a fact summary:
+  // numbered ("1. ... 2. ..."), an ordinal run ("first ... second ..."),
+  // or a first/then chain ("first A, then B, then C"). Returns 0 when the
+  // summary is not an ordered enumeration.
+  function softCountEnumeratedSteps(summary) {
+    const text = String(summary || '');
+    if (!text) return 0;
+    const numbered = text.match(/(?:^|[\s(])\d{1,2}[.)]\s|\bstep\s+\d{1,2}\b/gi);
+    if (numbered && numbered.length >= 2) return numbered.length;
+    const ordinals = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth'];
+    const found = [];
+    for (let i = 0; i < ordinals.length; i++) {
+      if (new RegExp('\\b' + ordinals[i] + '\\b', 'i').test(text)) found.push(i);
+    }
+    if (found.length >= 2 && found[0] === 0) {
+      let run = 1;
+      for (let i = 1; i < found.length; i++) {
+        if (found[i] === found[i - 1] + 1) run++;
+        else break;
+      }
+      if (run >= 2) return run;
+    }
+    if (/\bfirst\b/i.test(text)) {
+      const segments = text.split(/\bthen\b/i)
+        .map(part => part.trim())
+        .filter(part => part.split(/\s+/).filter(Boolean).length >= 2);
+      if (segments.length >= 2) return segments.length;
+    }
+    return 0;
+  }
+
+  // Paraphrase relevance score for one candidate fact. All lexical signals
+  // run on non-subject tokens only (layer-3 anti-bullying preserved).
+  function softTaughtFactScore(msgTokens, topic, summary, subjectTokens, message, wnCache) {
+    const msgNS = [...msgTokens].filter(token => !subjectTokens.has(token));
+    if (!msgNS.length) return 0;
+    const factNS = new Set(
+      [...new Set(baseTokens(String(topic || ''))), ...new Set(baseTokens(String(summary || '')))]
+        .filter(token => !subjectTokens.has(token)));
+    if (!factNS.size) return 0;
+    const factStems = new Set([...factNS].map(stemSubjectTerm));
+    const counted = new Set();
+    let score = 0;
+    // Exact non-subject overlap (cap 3).
+    let exactHits = 0;
+    for (const token of msgNS) {
+      if (exactHits >= 3) break;
+      if (counted.has(token)) continue;
+      if (factNS.has(token)) { counted.add(token); score += 1; exactHits++; }
+    }
+    // Stem overlap (cap 3).
+    let stemHits = 0;
+    for (const token of msgNS) {
+      if (stemHits >= 3) break;
+      if (counted.has(token)) continue;
+      if (factStems.has(stemSubjectTerm(token))) { counted.add(token); score += 1; stemHits++; }
+    }
+    // WordNet synonym overlap: the question's words expanded (cap 3).
+    let synHits = 0;
+    for (const token of msgNS) {
+      if (synHits >= 3) break;
+      if (counted.has(token)) continue;
+      const syns = softSynonymTokens(token, wnCache);
+      let hit = false;
+      for (const syn of syns) {
+        if (factNS.has(syn) || factStems.has(syn)) { hit = true; break; }
+      }
+      if (hit) { counted.add(token); score += 1; synHits++; }
+    }
+    // Shared content-word bigrams (+2 each, cap 2).
+    const msgBigrams = softBigramSet(softOrderedTokens(message, subjectTokens));
+    const factBigrams = softBigramSet(softOrderedTokens(String(topic || '') + ' ' + String(summary || ''), subjectTokens));
+    let bigramHits = 0;
+    for (const bigram of msgBigrams) {
+      if (bigramHits >= 2) break;
+      if (factBigrams.has(bigram)) { bigramHits++; score += 2; }
+    }
+    // Ordinal/count structural match: "the four steps" vs a 4-step
+    // enumeration in the fact summary.
+    const wanted = softQuestionStepCount(message);
+    if (wanted > 0 && softCountEnumeratedSteps(summary) === wanted) score += 3;
+    return score;
+  }
+
   function consultTaughtFacts(model, message = '', intent = 'open_chat', prompt = '') {
     const records = model?.lariLearnedRecords?.records || [];
     const msgTokens = new Set(baseTokens(message));
@@ -4877,8 +5044,11 @@ function attachSwarmModelRuntime(globalScope) {
     // lariSubjectTokens). Computed once per call; the record list is
     // small (tens of entries), so this stays cheap on the chat hot path.
     const subjectTokens = lariSubjectTokens(model);
-    // Records are prepended on write: iteration order is newest first, so a
-    // re-taught fact wins over an older one on the same topic.
+    // Pass 1: the hard relevance gate (unchanged). Records are prepended
+    // on write: iteration order is newest first, so a re-taught fact wins
+    // over an older one on the same topic. Records that fail the hard gate
+    // are collected for the soft pass below.
+    const softCandidates = [];
     for (const record of records) {
       if (!record || record.status !== 'active') continue;
       const payload = record.payload || {};
@@ -4888,7 +5058,7 @@ function attachSwarmModelRuntime(globalScope) {
       const summaryTokens = [...new Set(baseTokens(payload.summary || ''))];
       const factTokens = new Set([...topicTokens, ...summaryTokens]);
       const shared = [...factTokens].filter(token => msgTokens.has(token));
-      if (!shared.length) continue;
+      if (!shared.length) { softCandidates.push(record); continue; }
       // Layer 3: single-shared-token bullying. One shared content token
       // that is only a subject token (a name shared across many DIFFERENT
       // taught facts, e.g. "greg") does not select the fact — the question
@@ -4896,7 +5066,7 @@ function attachSwarmModelRuntime(globalScope) {
       // play fortnite" vs the home-server fact). Two or more shared
       // tokens, or one distinctive token, still select. (Re-teaches of the
       // same fact never create subject tokens — see lariSubjectTokens.)
-      if (shared.length < 2 && shared.every(token => subjectTokens.has(token))) continue;
+      if (shared.length < 2 && shared.every(token => subjectTokens.has(token))) { softCandidates.push(record); continue; }
       const topicCovered = topicTokens.filter(token => msgTokens.has(token)).length;
       const summaryCovered = summaryTokens.filter(token => msgTokens.has(token)).length;
       // The topic gate stops incidental summary mentions from selecting a
@@ -4908,7 +5078,7 @@ function attachSwarmModelRuntime(globalScope) {
       const topicGateOk = !topicTokens.length
         || topicCovered / topicTokens.length >= 0.5
         || (topicCovered > 0 && summaryCovered >= 3);
-      if (!topicGateOk) continue;
+      if (!topicGateOk) { softCandidates.push(record); continue; }
       const value = String(payload.summary || '').trim();
       if (!value) continue;
       // Consult-time poison defense: never serve a stored meta-instruction
@@ -4916,6 +5086,23 @@ function attachSwarmModelRuntime(globalScope) {
       // topic is iterated next and wins instead.
       if (isPoisonedTaughtFactSummary(value)) continue;
       return screenConsultedValue(value, intent, prompt || message, 'taught_fact', record.id || null);
+    }
+    // Pass 2: soft relevance (Fix B, 2026-09-19) — paraphrase-robust
+    // matching. Runs only when the hard gate matched nothing, newest
+    // first. Subject tokens stay excluded from every signal (see
+    // softTaughtFactScore), so the layer-3 anti-bullying guarantee is
+    // unchanged: a question whose only link to a fact is a subject token
+    // scores 0 here too.
+    const wnCache = new Map();
+    for (const record of softCandidates) {
+      const payload = record.payload || {};
+      const value = String(payload.summary || '').trim();
+      if (!value) continue;
+      if (isPoisonedTaughtFactSummary(value)) continue;
+      const score = softTaughtFactScore(msgTokens, payload.topic || '', value, subjectTokens, message, wnCache);
+      if (score >= SOFT_TAUGHT_FACT_THRESHOLD) {
+        return screenConsultedValue(value, intent, prompt || message, 'taught_fact', record.id || null);
+      }
     }
     return null;
   }
@@ -6087,8 +6274,20 @@ function attachSwarmModelRuntime(globalScope) {
       const recommendation = aReversible && bIrreversible ? 'Option A' : 'the option that reaches the constraint with less irreversible risk';
       answer = `Option A ${optionA}. Option B ${optionB}. The decision constraint is ${constraint}. I recommend ${recommendation} because Option A produces feedback within the stated window and remains reversible, while Option B delays feedback and carries greater irreversible risk.`;
     } else if (intent === 'planning') {
-      const goal = String(message || '').replace(/[.?!]+$/g, '').trim();
-      answer = `Plan for ${goal}:\n1. Baseline the current behavior and define a measurable success condition.\n2. Introduce the smallest reversible slice behind a compatibility boundary.\n3. Run old and new paths together and compare outputs before shifting traffic.\n4. Move traffic gradually while monitoring errors, latency, and data integrity.\n5. Complete the migration only after the new path remains stable.\nLargest risk: an incompatible state or data transition that appears only after traffic moves.\nRollback checkpoint: preserve the prior deployment and data format until the comparison and gradual rollout gates pass.`;
+      // Answer-time consultation (Fix B, 2026-09-19): a retained taught
+      // fact about the requested steps outranks the generic plan template
+      // — e.g. "what are the four steps for handling problems" must serve
+      // the taught 4-step method, not a canned migration plan. The template
+      // stays the fallback when nothing retained matches. (Mirrors the
+      // open_chat branch's consultation rescue below.)
+      const consultedPlanning = consultRetainedAnswerKnowledge(model, message, intent, { prompt: message });
+      if (consultedPlanning) {
+        answer = consultedPlanning.answer;
+        var __retainedConsultHit = true;
+      } else {
+        const goal = String(message || '').replace(/[.?!]+$/g, '').trim();
+        answer = `Plan for ${goal}:\n1. Baseline the current behavior and define a measurable success condition.\n2. Introduce the smallest reversible slice behind a compatibility boundary.\n3. Run old and new paths together and compare outputs before shifting traffic.\n4. Move traffic gradually while monitoring errors, latency, and data integrity.\n5. Complete the migration only after the new path remains stable.\nLargest risk: an incompatible state or data transition that appears only after traffic moves.\nRollback checkpoint: preserve the prior deployment and data format until the comparison and gradual rollout gates pass.`;
+      }
     } else if (intent === 'greeting') {
       const greetSeed = String(message || '') + (getConversationContext(model, resolveLariPreferenceUserScope(model, context))?.turnCount || 0);
       const greetings = {
@@ -6454,7 +6653,7 @@ function attachSwarmModelRuntime(globalScope) {
       }
     }
 
-    if (intent === 'planning' && !adviceOnly && !/next/i.test(answer)) {
+    if (intent === 'planning' && !adviceOnly && !/next/i.test(answer) && typeof __retainedConsultHit === 'undefined') {
       answer += '\n- Next: convert the strongest step into a benchmarked operator so the swarm can repeat it and improve.';
     }
     const selfContainedConversationalAct = /\b(?:story|tale|disagree|downside|drawback|too much coffee|brain is vibrating|overcaffeinated|caffeine)\b/i.test(message);
@@ -16211,14 +16410,25 @@ function attachSwarmModelRuntime(globalScope) {
     if (/separat(?:e|ed)[\s\S]{0,100}(?:6|six|exactly\s+6)\s+asterisk|separat(?:e|ed)[\s\S]{0,100}\*{6,}/i.test(prompt)) plan.twoResponses = true;
 
     const negativeSpans = [];
-    const negativeClausePattern = /(?:do not|don't|does not|doesn't|must not|should not|never|avoid|exclude|refrain from|not allowed to)\s+(?:use|using|include|including|contain|containing|mention|write|say)?\s*(?:the\s+)?(?:following\s+)?(?:keywords?|words?)?\s*:?[ \t]*([^.;\n]+)/gi;
+    // A negative clause only names forbidden words when it is genuinely a
+    // word-targeting instruction ("do not use the word X", "don't mention Y").
+    // Bare colloquial negatives ("don't dodge", "never say code works unless
+    // it has actually been run and checked") are behavioral language, not word
+    // lists: splitting such a clause on "and"/"or" used to promote a trailing
+    // content word ("checked", "dodge") into a forbidden word and strip it out
+    // of the answer. So extraction now requires (a) a word-targeting verb or
+    // an explicit word(s)/keyword(s) marker (or quoted items), and (b) every
+    // comma/or/and-separated chunk of the clause to be a single word-like
+    // token -- a multi-word chunk means the clause is a sentence, not a list.
+    const negativeClausePattern = /(?:do not|don't|does not|doesn't|must not|should not|never|avoid|exclude|refrain from|not allowed to)\s+(use|using|include|including|contain|containing|mention|write|say)?\s*(?:the\s+)?(?:following\s+)?(keywords?|words?)?\s*:?[ \t]*([^.;\n]+)/gi;
     for (const match of prompt.matchAll(negativeClausePattern)) {
       negativeSpans.push([match.index, match.index + match[0].length]);
-      const clause = String(match[1] || '').replace(/\b(?:anywhere|at all|in (?:your|the) (?:response|answer|remark|text)).*$/i, '').trim();
-      const quotedItems = extractQuotedPhrases(clause).filter(item => /^[A-Za-z0-9_-]+$/.test(item));
-      const items = quotedItems.length
-        ? quotedItems
-        : clause.replace(/["'“”\[\]]/g, '').split(/,|\bor\b|\band\b/i).map(item => item.trim()).filter(item => /^[A-Za-z0-9_-]+$/.test(item));
+      const clause = String(match[3] || '').replace(/\b(?:anywhere|at all|in (?:your|the) (?:response|answer|remark|text)).*$/i, '').trim();
+      const wordTargeted = Boolean(match[1] || match[2]) || /["'“”]/.test(clause);
+      const quotedItems = wordTargeted ? extractQuotedPhrases(clause).filter(item => /^[A-Za-z0-9_-]+$/.test(item)) : [];
+      const chunks = clause.replace(/["'“”\[\]]/g, '').split(/,|\bor\b|\band\b/i).map(item => item.trim()).filter(Boolean);
+      const isWordList = wordTargeted && chunks.length > 0 && chunks.every(item => /^[A-Za-z0-9_-]+$/.test(item));
+      const items = quotedItems.length ? quotedItems : (isWordList ? chunks : []);
       plan.forbiddenWords.push(...items);
     }
     plan.forbiddenWords = unique(plan.forbiddenWords);
@@ -16320,6 +16530,24 @@ function attachSwarmModelRuntime(globalScope) {
     const usableFallback = fallbackBody && !isLariGenericFallbackAnswer(fallbackBody) && !lariAnswerNeedsVisibleRepair(fallbackBody)
       && (isLariConcreteModelAnswer(fallbackBody) || fallbackOverlap >= 8 || salientOverlap > 0);
     let base = usableFallback ? fallbackBody : '';
+    // A structural-only constraint (sentence/paragraph/section/bullet/line
+    // counts, two responses, placeholders, highlights, capital-word padding)
+    // with no content to shape -- generic fallback and no topic phrase --
+    // cannot be realized honestly. Fabricating topic-guess filler here
+    // ("Calm words provide useful practical detail.", "The safe implementation
+    // validates its input...") replaced real answers with unrelated text.
+    // Defer (return null) so the fallback -- the taught-fact/consultation
+    // path or the honest deflection -- survives instead.
+    const structuralOnly = !plan.exactResponse && !plan.exactEnd && !plan.repeatPrompt && !plan.repeatPhrase
+      && !plan.choice.length && !plan.forbiddenWords.length && !plan.keywords.length
+      && !plan.json && !plan.lowerCase && !plan.upperCase && !plan.noComma && !plan.quote
+      && !plan.title && !plan.postscript && !plan.requiredPrefix && !plan.lineEnding
+      && !plan.sentenceEnding && !plan.letterFrequency && !plan.characterConstraints.length
+      && !plan.exactWords && !plan.minWords && !plan.maxWords;
+    const structuralFabrication = plan.exactSentences || plan.minSentences || plan.maxSentences
+      || plan.paragraphCount || plan.sectionCount || plan.bulletCount || plan.lineCount
+      || plan.twoResponses || plan.placeholderCount || plan.highlightCount || plan.capitalWordCount;
+    if (structuralOnly && structuralFabrication && !base && !plan.topicPhrase) return null;
     if (!base) {
       const alphabeticCharacterConstraint = plan.characterConstraints.some(item => /[A-Za-z]/.test(item.character));
       if (alphabeticCharacterConstraint) base = `${plan.topicPhrase || 'calm words'} stay useful now.`;
@@ -16379,7 +16607,20 @@ function attachSwarmModelRuntime(globalScope) {
       });
     } else if (plan.exactSentences || plan.minSentences || plan.maxSentences) {
       const target = targetSentenceCount;
-      units = Array.from({ length: target }, (_, index) => `${index < plan.highlightCount ? `*Focus ${index + 1}* ` : ''}${sentenceFor(index)}`);
+      if (base) {
+        // Real content exists: shape it into the requested sentence count
+        // instead of discarding it for fabricated filler.
+        const sentences = (base.match(/[^.!?]+[.!?]+["']?/g) || [base]).map(item => item.trim()).filter(Boolean);
+        units = sentences.slice(0, Math.max(target, 1));
+        while (units.length < target && (plan.exactSentences || plan.minSentences)) {
+          units.push(`Another useful point supports ${topicText} clearly.`);
+        }
+        if (plan.highlightCount && units.length) {
+          units = units.map((unit, index) => index < plan.highlightCount && !/^\*Focus \d+\* /.test(unit) ? `*Focus ${index + 1}* ${unit}` : unit);
+        }
+      } else {
+        units = Array.from({ length: target }, (_, index) => `${index < plan.highlightCount ? `*Focus ${index + 1}* ` : ''}${sentenceFor(index)}`);
+      }
     } else if (plan.highlightCount) {
       units = Array.from({ length: plan.highlightCount }, (_, index) => `*Focus ${index + 1}* offers useful detail about the requested topic.`);
     } else {
@@ -28856,12 +29097,16 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     // "Remember that" teachings are durable facts on EVERY chat answer path
     // (kernel general chat, answer_with_repaired_skill, session_context_memory,
     // self-knowledge ...): extract + retain before routing, so the path that
-    // serves the answer never determines whether a teaching is stored. Gated
-    // to chat-ish turns only (code/research lanes are untouched); the
-    // extractor itself only fires on the explicit "remember that/this"
-    // trigger, and retainTaughtFactFromChat is idempotent (stable id ->
-    // update in place), so re-passes are no-ops.
-    if (request.mode === 'chat') {
+    // serves the answer never determines whether a teaching is stored. The
+    // code lane is included: a turn like "here's your debugging method,
+    // remember that: ... bug ... fix ..." routes to action:code and gets the
+    // canned code-lane reply, but the teaching on that turn must still be
+    // stored (tutoring session 6, 2026-09-19). The extractor itself only
+    // fires on the explicit "remember that/this" trigger, and
+    // retainTaughtFactFromChat is idempotent (stable id -> update in place),
+    // so this is observational only: routing and the canned code-lane reply
+    // are untouched. Research/product lanes stay excluded (deliberate).
+    if (request.mode === 'chat' || request.mode === 'code') {
       try {
         const taughtFactAtEntry = extractTaughtFactFromChat(focusedText);
         if (taughtFactAtEntry) retainTaughtFactFromChat(model, taughtFactAtEntry, { userScope });

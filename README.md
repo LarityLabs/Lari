@@ -53,6 +53,9 @@ node scripts/test_lari_layer2_wrapper_stripping.js # fact stored, not wrapper: 1
 node scripts/test_lari_layer3_evidence_relevance.js # no shared-token bullying: 11/11 expected
 node scripts/test_lari_layer4_lane_precedence.js   # taught facts beat lanes: 12/12 expected
 node scripts/test_lari_layer5_unrecognized_intent_pairs.js # pairs w/o intent: 16/16 expected
+node scripts/test_lari_code_lane_extraction.js # code-lane teachings retain: 11/11 expected
+node scripts/test_lari_consultation_paraphrase.js # paraphrase consult: 16/16 expected
+node scripts/test_lari_instruction_constraint_realization.js # no filler/mangling: 14/14 expected
 node scripts/test_lari_attribute_chat.js  # chat regression: 8/8 expected
 node scripts/test_lari_learn_retention.js # research -> retain -> recall: 10/10 expected
 node scripts/run_lari_consolidation.js    # nightly consolidation (dry-run supported)
