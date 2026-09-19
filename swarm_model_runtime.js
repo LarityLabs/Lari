@@ -147,6 +147,58 @@ function attachSwarmModelRuntime(globalScope) {
       .map(token => token.replace(/s$/, ''));
   }
 
+  // Subject-token detection (layer 3, 2026-09-19): a content token that
+  // appears in the topics of two or more distinct taught facts is a
+  // "subject token" — typically a name ("greg") taught across several
+  // facts. A question sharing ONLY a subject token with a fact is naming
+  // the subject, not asking about the fact's focus, so a bare-subject
+  // match is weak: it must not select evidence and must not win
+  // taught-fact consultation. ("what books has Greg published" shares
+  // only "greg" with the home-server fact, whose topic is the bare
+  // subject "Greg".)
+  function lariSubjectTokens(model) {
+    const records = (model?.lariLearnedRecords?.records || []).filter(record =>
+      record && record.status === 'active'
+      && record.type === 'knowledge'
+      && record.payload?.kind === 'taught_fact');
+    // A token is a *subject* token only when it spans records that teach
+    // DIFFERENT facts. Re-teaches of the same fact (near-identical
+    // summaries — e.g. a correction restating the same teaching with a
+    // "naw man." prefix) must not promote their topic words to subject
+    // status: otherwise the fact becomes unservable for any question
+    // sharing only that word, and tutoring the same thing twice would
+    // make it *harder* to recall.
+    const normSummary = (s) => String(s || '').toLowerCase()
+      .replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const summarySimilar = (a, b) => {
+      if (!a || !b) return false;
+      if (a === b || a.includes(b) || b.includes(a)) return true;
+      const ta = new Set(a.split(' ').filter(Boolean));
+      const tb = new Set(b.split(' ').filter(Boolean));
+      let inter = 0;
+      for (const t of ta) if (tb.has(t)) inter++;
+      const union = ta.size + tb.size - inter;
+      return union > 0 && inter / union >= 0.7;
+    };
+    const seenSummaries = [];
+    const tokenFactCount = new Map();
+    for (const record of records) {
+      const sNorm = normSummary(record.payload.summary);
+      // Same fact as an already-counted record: adds no new document
+      // frequency, no matter how its topic was extracted.
+      if (seenSummaries.some(prev => summarySimilar(prev, sNorm))) continue;
+      seenSummaries.push(sNorm);
+      for (const token of new Set(baseTokens(record.payload.topic || ''))) {
+        tokenFactCount.set(token, (tokenFactCount.get(token) || 0) + 1);
+      }
+    }
+    const subjects = new Set();
+    for (const [token, count] of tokenFactCount) {
+      if (count >= 2) subjects.add(token);
+    }
+    return subjects;
+  }
+
   // Doubled-final-consonant collapse for token comparison ("debugging" /
   // "debugg" vs "debug"). lexicalRoot stems "debugging" to "debugg" while
   // "debug" stays "debug"; without this, ordinary inflection reads as a
@@ -4589,7 +4641,46 @@ function attachSwarmModelRuntime(globalScope) {
   //   "remember that the sky is blue"                          (fact after)
   // "remember that" alone, questions, and sub-3-word fragments are not
   // facts and return null.
+  //
+  // Meta-instruction wrapper stripping (Session 5, 2026-09-19): a teaching
+  // sometimes carries a serving directive along with the fact ("Lari is
+  // short for Singularity. when I ask what the name means, say that") or
+  // IS a pure directive ("when I say thanks just say 'anytime'"). Storing
+  // the directive verbatim poisons the fact store — Session 5's T26 left
+  // ". when I ask what the name means, say that." as the summary and T28
+  // served that wrapper verbatim as a chat answer. The stripper below
+  // removes wrapper clauses so only declarative content is retained; a
+  // pure directive returns '' (it belongs to the miner's instruction-pair
+  // mechanism, not the fact store).
   // ---------------------------------------------------------------------------
+  function stripTaughtFactMetaWrapper(factText = '') {
+    let text = String(factText || '').trim();
+    if (!text) return '';
+    // Wrapper clause: "when I ask|say X, say|tell|reply|respond Y" — a
+    // directive keyed on a future question/signal, possibly quoted.
+    const wrapperRe = /(?:^|[.!?]\s+|\s*[,;]\s*)when\s+i\s+(?:ask|say|mention|bring\s+up|request)\b[^.!?]*?(?:say|tell\s+me|reply|respond|answer)\s+(?:['"][^'"]*['"]|that|this|it|\b[\w'-]{1,24}\b)[^.!?]*/gi;
+    text = text.replace(wrapperRe, ' ').replace(/\s{2,}/g, ' ').trim();
+    // A residue that is nothing but a bare serving directive is not a fact.
+    if (/^(?:just\s+)?(?:say|tell\s+me|reply|respond|answer)\s+(?:that|this|it|with\s+that)[\s.!?]*$|^lock\s+it\s+in[\s.!?]*$|^remember\s+this\s+one[\s.!?]*$/i.test(text)) return '';
+    return text;
+  }
+
+  // Consult-time poison defense (Session 5 T26/T28): records already in the
+  // wild may store the meta-instruction wrapper instead of the fact. Such a
+  // summary must never be served as an answer; skipping it here lets a
+  // clean fact on the same topic win by iteration order.
+  function isPoisonedTaughtFactSummary(summary = '') {
+    const text = String(summary || '').trim();
+    if (!text) return true;
+    if (/^[.,;:!?'"(\[]/.test(text)) return true; // T26 residue: ". when I ask..."
+    const lower = text.toLowerCase();
+    if (/\bwhen\s+i\s+(?:ask|say|mention|bring\s+up|request)\b/.test(lower)
+        && /\b(?:say|tell|reply|respond|answer)\b/.test(lower)) return true;
+    if (/^(?:just\s+)?(?:say|tell\s+me|reply|respond|answer)\s+(?:that|this|it|with\s+that)[\s.!?]*$/.test(lower)) return true;
+    if (/\block\s+it\s+in\b/.test(lower)) return true;
+    return false;
+  }
+
   function extractTaughtFactFromChat(message = '') {
     const text = String(message || '').trim();
     if (!text || /[?]\s*$/.test(text)) return null;
@@ -4600,6 +4691,11 @@ function attachSwarmModelRuntime(globalScope) {
     } else if ((m = /\bremember\s+(?:that|this)\b\s*[:,]?\s*(.+?)[.!?\s]*$/i.exec(text)) && m[1].trim()) {
       factText = m[1].trim();
     }
+    if (!factText) return null;
+    // Strip meta-instruction wrappers so the fact store holds the fact,
+    // not the directive about how to serve it (Session 5 T26/T28). A pure
+    // directive has no declarative content and returns null.
+    factText = stripTaughtFactMetaWrapper(factText);
     if (!factText) return null;
     if (factText.split(/\s+/).filter(Boolean).length < 3) return null;
     // Topic: the subject of the teaching — the phrase before the first
@@ -4777,6 +4873,10 @@ function attachSwarmModelRuntime(globalScope) {
     const records = model?.lariLearnedRecords?.records || [];
     const msgTokens = new Set(baseTokens(message));
     if (!msgTokens.size) return null;
+    // Layer 3: a bare-subject match never selects a fact (see
+    // lariSubjectTokens). Computed once per call; the record list is
+    // small (tens of entries), so this stays cheap on the chat hot path.
+    const subjectTokens = lariSubjectTokens(model);
     // Records are prepended on write: iteration order is newest first, so a
     // re-taught fact wins over an older one on the same topic.
     for (const record of records) {
@@ -4789,11 +4889,87 @@ function attachSwarmModelRuntime(globalScope) {
       const factTokens = new Set([...topicTokens, ...summaryTokens]);
       const shared = [...factTokens].filter(token => msgTokens.has(token));
       if (!shared.length) continue;
+      // Layer 3: single-shared-token bullying. One shared content token
+      // that is only a subject token (a name shared across many DIFFERENT
+      // taught facts, e.g. "greg") does not select the fact — the question
+      // names the subject but asks about something else ("does Greg
+      // play fortnite" vs the home-server fact). Two or more shared
+      // tokens, or one distinctive token, still select. (Re-teaches of the
+      // same fact never create subject tokens — see lariSubjectTokens.)
+      if (shared.length < 2 && shared.every(token => subjectTokens.has(token))) continue;
       const topicCovered = topicTokens.filter(token => msgTokens.has(token)).length;
-      if (topicTokens.length && topicCovered / topicTokens.length < 0.5) continue;
+      const summaryCovered = summaryTokens.filter(token => msgTokens.has(token)).length;
+      // The topic gate stops incidental summary mentions from selecting a
+      // fact — but a junk-extracted topic ("back again greg", from a "yo,
+      // back again." preamble) must not veto a fact whose summary plainly
+      // answers the question. Pass when the topic is substantially
+      // covered, or when the topic is touched at all and the summary
+      // overlap is strong (>= 3 shared content tokens).
+      const topicGateOk = !topicTokens.length
+        || topicCovered / topicTokens.length >= 0.5
+        || (topicCovered > 0 && summaryCovered >= 3);
+      if (!topicGateOk) continue;
       const value = String(payload.summary || '').trim();
       if (!value) continue;
+      // Consult-time poison defense: never serve a stored meta-instruction
+      // wrapper as an answer (Session 5 T28). A clean fact on the same
+      // topic is iterated next and wins instead.
+      if (isPoisonedTaughtFactSummary(value)) continue;
       return screenConsultedValue(value, intent, prompt || message, 'taught_fact', record.id || null);
+    }
+    return null;
+  }
+
+  // Strong taught-fact precedence (2026-09-19, layer 4).
+  //
+  // For factual-recall questions, a STRONG taught fact outranks the
+  // dictionary define lane and the self-knowledge / session-context-memory
+  // lanes. Strong means: an explicit "remember that" teaching
+  // (payload.explicit === true, source 'explicit_remember_that'), stored at
+  // confidence >= 0.9, active, with good topic coverage of the question
+  // (the same relevance bar as consultTaughtFacts: at least one shared
+  // content token and at least half of the fact's topic tokens covered by
+  // the question). The high bar keeps weak, decayed, or incidental facts
+  // from hijacking lanes that genuinely answer well — the dictionary still
+  // defines genuinely unknown words and the self-identity merge still owns
+  // acronym questions. The returned value is leak-screened exactly like
+  // every other consulted value.
+  function consultStrongTaughtFactForLane(model, message = '', intent = 'open_chat', prompt = '') {
+    try {
+      const records = model?.lariLearnedRecords?.records || [];
+      const msgTokens = new Set(baseTokens(message));
+      if (!msgTokens.size) return null;
+      // Records are prepended on write: iteration order is newest first, so
+      // a re-taught fact wins over an older one on the same topic.
+      for (const record of records) {
+        if (!record || record.status !== 'active') continue;
+        const payload = record.payload || {};
+        if (record.type !== 'knowledge' || payload.kind !== 'taught_fact') continue;
+        if (!(payload.explicit === true || payload.source === 'explicit_remember_that')) continue;
+        if (Number(payload.confidence ?? 1) < 0.9) continue;
+        const topicTokens = [...new Set(baseTokens(payload.topic || ''))];
+        const summaryTokens = [...new Set(baseTokens(payload.summary || ''))];
+        const factTokens = new Set([...topicTokens, ...summaryTokens]);
+        const shared = [...factTokens].filter(token => msgTokens.has(token));
+        if (!shared.length) continue;
+        // Bare-subject matches are weak (same rule as the evidence filter):
+        // a fact whose only shared tokens with the question are subject
+        // tokens (a name/topic spanning many DIFFERENT taught facts, e.g.
+        // "greg") must not claim the lane — otherwise the newest
+        // bare-subject fact bullies every question that merely mentions
+        // the subject. (Re-teaches of one fact never create subject
+        // tokens — see lariSubjectTokens.)
+        const subjects = lariSubjectTokens(model);
+        if (!shared.some(token => !subjects.has(token))) continue;
+        const topicCovered = topicTokens.filter(token => msgTokens.has(token)).length;
+        if (topicTokens.length && topicCovered / topicTokens.length < 0.5) continue;
+        const value = String(payload.summary || '').trim();
+        if (!value) continue;
+        const screened = screenConsultedValue(value, intent, prompt || message, 'taught_fact_strong', record.id || null);
+        return { ...screened, summary: value };
+      }
+    } catch (_) {
+      // Never break answering on a precedence check.
     }
     return null;
   }
@@ -5788,6 +5964,22 @@ function attachSwarmModelRuntime(globalScope) {
     const rootsEqualChat = (a, b) => a === b || undoubledRoot(a) === b || a === undoubledRoot(b);
     const queryTerms = new Set(baseTokens(message).filter(token => token.length > 3 && !genericQueryTerms.has(token)));
     const queryRoots = new Set([...queryTerms].map(lexicalRoot).filter(root => root.length > 2));
+    // Layer 3: subject-token roots for the single-shared-token bar below
+    // (see lariSubjectTokens). A lone shared root that only names the
+    // subject must not select a fact as evidence.
+    const subjectTokenRoots = new Set(
+      [...lariSubjectTokens(model)].map(lexicalRoot).filter(root => root.length > 2));
+    // Layer 3: true when a knowledge hit's ONLY shared content root with
+    // the question is a subject token — weak evidence no matter how high
+    // its topic coverage. (A one-token "Greg" topic otherwise answers any
+    // question that merely names Greg: "what books has Greg published".)
+    const chatHitBareSubjectWeak = (hit) => {
+      const weakTopicTerms = new Set(baseTokens(`${hit?.item?.topic || ''} ${hit?.item?.subject || ''}`)
+        .filter(token => token.length > 3 && !genericQueryTerms.has(token)));
+      const weakTopicRoots = new Set([...weakTopicTerms].map(lexicalRoot).filter(root => root.length > 2));
+      const weakMatchedRoots = [...queryRoots].filter(root => weakTopicRoots.has(root));
+      return weakMatchedRoots.length === 1 && weakMatchedRoots.every(root => subjectTokenRoots.has(root));
+    };
     const adviceOnly = /\b(?:do not|don't|dont|without|rather than)\s+(?:change|edit|modify|write|patch|touch)\b[\s\S]{0,45}\b(?:files?|repo(?:sitory)?|workspace|code)\b/i.test(message);
     const relevantHits = hits.filter(hit => {
       const topicTerms = new Set(baseTokens(`${hit.item?.topic || ''} ${hit.item?.subject || ''}`)
@@ -5802,7 +5994,10 @@ function attachSwarmModelRuntime(globalScope) {
       // One-directional coverage is still not subject agreement: "west
       // germany" overlaps "germany" enough to pass, so also require the
       // record's subject to agree with the question's subject as a whole.
-      return topicMatches > 0 && (Number(hit.topicCoverage || 0) > 0.5 || rootedCoverage > 0.5 || topicMatches >= 2)
+      // Layer 3: a bare-subject single-token match (chatHitBareSubjectWeak)
+      // never selects evidence, even at full topic coverage.
+      return topicMatches > 0 && !chatHitBareSubjectWeak(hit)
+        && (Number(hit.topicCoverage || 0) > 0.5 || rootedCoverage > 0.5 || topicMatches >= 2)
         && knowledgeSubjectAgrees(hit.item?.topic || '', message);
     });
     const routeTerms = new Set(baseTokens([
@@ -6162,18 +6357,37 @@ function attachSwarmModelRuntime(globalScope) {
           : fuzzyRotate(model, 'fuzzyDeflection', OPEN_CHAT_DEFLECTIONS);
       }
     } else if (evidence.length || routeText) {
-      const lead = intent === 'planning'
-        ? 'Here is the practical path:'
-        : intent === 'comparison'
-          ? 'The useful comparison is this:'
-          : intent === 'troubleshooting'
-            ? 'The likely fix path is:'
-            : 'Here is the best answer from local model memory:';
-      const bullets = [
-        routeText,
-        ...evidence
-      ].filter(Boolean).slice(0, 4);
-      answer = `${lead}\n${bullets.map(item => `- ${item}`).join('\n')}`;
+      // Layer-3 precedence (2026-09-19): consult explicit taught facts
+      // BEFORE composing from evidence. Strength order: strong taught
+      // fact > strong evidence > weak evidence. A strong taught fact
+      // (explicit "remember that", confidence >= 0.5, sharing real
+      // content beyond a bare subject token — consultTaughtFacts only
+      // returns such matches) outranks weak evidence, but never hijacks
+      // genuinely strong evidence: when the evidence is strong, the
+      // evidence composition below wins unchanged.
+      let taughtPrecedenceAnswer = null;
+      try {
+        const taughtFirst = consultTaughtFacts(model, message, intent, message);
+        const evidenceAllWeak = evidence.length > 0
+          && relevantHits.slice(0, 3).every(chatHitBareSubjectWeak);
+        if (taughtFirst && evidenceAllWeak) taughtPrecedenceAnswer = taughtFirst.answer;
+      } catch (_) { /* consultation never breaks chat */ }
+      if (taughtPrecedenceAnswer) {
+        answer = taughtPrecedenceAnswer;
+      } else {
+        const lead = intent === 'planning'
+          ? 'Here is the practical path:'
+          : intent === 'comparison'
+            ? 'The useful comparison is this:'
+            : intent === 'troubleshooting'
+              ? 'The likely fix path is:'
+              : 'Here is the best answer from local model memory:';
+        const bullets = [
+          routeText,
+          ...evidence
+        ].filter(Boolean).slice(0, 4);
+        answer = `${lead}\n${bullets.map(item => `- ${item}`).join('\n')}`;
+      }
     } else {
       // Debug intent: user pasted broken code and asks to fix it.
       // Run it, repair it, verify the fix — only answer when verified.
@@ -23635,7 +23849,13 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
       rememberFact({ type: 'current_goal', key: 'current_goal', value: auditedGoal });
       rememberEvent({ type: 'pending_action', value: session.userMemory.pendingAction.action });
       rememberFact({ type: 'pending_action', key: 'pending_action', value: session.userMemory.pendingAction.action });
-    } else if (goalMatch && !/^\s*(ok\s+)?(do it|do that|why|what'?s next|what now)\b/i.test(text)) {
+    } else if (goalMatch && !/^\s*(ok\s+)?(do it|do that|why|what'?s next|what now)\b/i.test(text)
+      // Layer-4 hygiene (2026-09-19): a speech dictate ("when I say X just
+      // say 'Y'") is an instruction, not a goal — quoted/dictated fragments
+      // must never become the stored current goal, or the session-context
+      // lane later stitches them into fake goal statements.
+      && !/\bjust say\b/i.test(text)
+      && !/\bwhen i (?:say|ask)\b/i.test(text)) {
       session.userMemory.currentGoal = {
         text: goalMatch[1].trim(),
         updatedAt: now,
@@ -23766,6 +23986,16 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
       return `I will do the stored next action: ${action}. I will keep it inside Lari's existing session memory and unified runpath, then verify it with a reload-stable gate.`;
     }
     if (/^why\b|why\?|why that\b/i.test(text)) {
+      // Layer-4 guard (2026-09-19): a factual why-question about Lari's
+      // origin/identity/purpose ("why did I build you") is not a session
+      // follow-up. Raw recent-turn text must never be composed into a
+      // declarative statement about goals/identity/facts — the
+      // taught-fact/evidence layers own factual claims. Stay unclaimed so
+      // the caller falls through to the taught-fact precedence above or,
+      // with nothing retained, the honest deflection.
+      if (/\bwhy\s+(?:did\s+i\s+(?:build|make|create|design)\s+you|was\s+i\s+(?:built|made|created|designed))\b/i.test(text)) {
+        return null;
+      }
       if (memory.pendingAction?.action) {
         return `Because the stored action targets the active goal instead of starting over: ${memory.pendingAction.action}. It should improve Lari's durable state memory and prove the behavior after reload.`;
       }
@@ -23880,6 +24110,7 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     if (record?.action === 'answer_from_retained_research' && output) return output;
     if (record?.action === 'goal_capability_practice_queued' && output) return output;
     if (record?.action === 'session_context_memory' && output) return output;
+    if (record?.action === 'taught_fact_precedence' && output) return output;
     if (record?.action === 'explain_selected_capability' && output) return output;
     if (record?.action === 'request_clarification' && output) return output;
     if (record?.action === 'answer_with_local_code_synthesis' && output) return output;
@@ -28622,6 +28853,20 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
       userScope: context.userScope || context.userId || request.userScope || request.userId
     });
     const session = ensureLariSessionUserScope(model, { userScope });
+    // "Remember that" teachings are durable facts on EVERY chat answer path
+    // (kernel general chat, answer_with_repaired_skill, session_context_memory,
+    // self-knowledge ...): extract + retain before routing, so the path that
+    // serves the answer never determines whether a teaching is stored. Gated
+    // to chat-ish turns only (code/research lanes are untouched); the
+    // extractor itself only fires on the explicit "remember that/this"
+    // trigger, and retainTaughtFactFromChat is idempotent (stable id ->
+    // update in place), so re-passes are no-ops.
+    if (request.mode === 'chat') {
+      try {
+        const taughtFactAtEntry = extractTaughtFactFromChat(focusedText);
+        if (taughtFactAtEntry) retainTaughtFactFromChat(model, taughtFactAtEntry, { userScope });
+      } catch (_) { /* teaching capture never breaks chat */ }
+    }
     const carriedCurriculum = context.goalCurriculum || context.goal_curriculum || null;
     if (/^(ok\s+)?do it\b|^do that\b|^let'?s do it\b/i.test(rawText)
       && carriedCurriculum?.goal
@@ -28744,6 +28989,35 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     } catch (_) {
       selfAnswer = null;   // never let the new lane break an existing reply
     }
+    // Layer-4 precedence (2026-09-19): for factual-recall questions, a
+    // STRONG explicitly-taught fact outranks the dictionary define lane and
+    // the self-knowledge / session-context-memory lanes below. The
+    // self-identity intent already merges retained identity knowledge with
+    // the default in-kernel (acronym/he-him/Larry line) and thanks is owned
+    // by instruction pairs, so neither needs the override. When the kernel
+    // already served this same fact, keep its answer untouched.
+    let strongTaughtFact = null;
+    try {
+      const laneIntent = classifyChatIntent(focusedText);
+      const factualRecallQuestion = /^\s*(?:what|who|why|where|when|which|how|whose|whom)\b/i.test(focusedText)
+        || /\bwhat\s+(?:is|are|was|were|does|do|did)\b/i.test(focusedText);
+      if (factualRecallQuestion && laneIntent !== 'self_identity' && laneIntent !== 'thanks') {
+        strongTaughtFact = consultStrongTaughtFactForLane(model, focusedText, laneIntent, focusedText);
+        // If the kernel already served this same fact and no later lane
+        // would override it, keep the kernel's answer untouched. But when a
+        // lane override (self-knowledge / session-context-memory) is pending,
+        // the fact must be re-asserted — otherwise the override silently
+        // drops the teaching the kernel just served.
+        const kernelServedFact = strongTaughtFact
+          && String(record.outputText || '').includes(strongTaughtFact.summary);
+        const laneOverridePending = !!selfAnswer?.answered || !!contextMemoryAnswer;
+        if (kernelServedFact && !laneOverridePending) {
+          strongTaughtFact = null;
+        }
+      }
+    } catch (_) {
+      strongTaughtFact = null;   // never let the precedence check break an existing reply
+    }
     const preserveRecapPublicAnswer = ['recap_executable_language', 'canonical_learned_record_execution', 'verified_retained_knowledge', 'native_instruction_constraint_compiler', 'native_math_reasoning'].includes(run?.result?.publicAnswerSource)
       && String(record.outputText || '').trim().length > 0;
     if (preserveRecapPublicAnswer) {
@@ -28762,6 +29036,25 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
           procedureStepCount: selectedProcedure.length,
           passed: true
         }
+      ];
+    } else if (strongTaughtFact) {
+      // Layer-4 precedence (2026-09-19): a strong explicitly-taught fact
+      // wins over the dictionary define lane (which already ran inside the
+      // kernel) and over the self-knowledge / session-context-memory lanes
+      // for factual-recall questions. The value was leak-screened by
+      // consultStrongTaughtFactForLane before it could become an answer.
+      record.action = 'taught_fact_precedence';
+      record.outputText = strongTaughtFact.answer;
+      record.passed = true;
+      record.taughtFactPrecedence = {
+        used: true,
+        source: strongTaughtFact.source,
+        sourceId: strongTaughtFact.sourceId || null,
+        blocked: strongTaughtFact.blocked === true
+      };
+      record.trace = [
+        ...(record.trace || []),
+        { phase: 'taught_fact_precedence', passed: true, source: strongTaughtFact.source, sourceId: strongTaughtFact.sourceId || null }
       ];
     } else if (selfAnswer?.answered) {
       record.action = 'self_knowledge_realization';

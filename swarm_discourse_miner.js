@@ -73,9 +73,12 @@ const CORRECTION_RES = [
   /\bmissed the point\b/i,
   /\banswer(ing)? my question\b/i,
   // Instructional directive: the user teaches the right behavior after a
-  // failure ("when I say thanks just say 'anytime'", "brb means be right
-  // back, when I say brb you say got it"). This is a correction.
-  /\bwhen i say\b.{0,80}?\b(just\s+)?(say|answer|reply|respond)\b/i
+  // failure ("when I say thanks just say 'anytime'", "when I ask if we're
+  // good just say 'all good man'", "brb means be right back, when I say
+  // brb you say got it"). The leading verb tolerates ask/tell and the
+  // stimulus may be embedded as a subordinate clause ("if we're good").
+  // This is a correction.
+  /\bwhen\s+i\s+(?:say|ask|tell)\b.{0,80}?\b(just\s+)?(say|answer|reply|respond)\b/i
 ];
 const SHORT_REJECTIONS = new Set(['naw', 'nope', 'nah', 'wrong', 'no', 'incorrect']);
 const APPROVAL_RE = /\b(thanks|thank you|thx|perfect|exactly|nailed it|nice|love it|good (one|shit|call)|lol|lmao|haha|awesome|great)\b/i;
@@ -133,14 +136,45 @@ function cleanInstructionResponse(raw) {
   return s;
 }
 
+// Restore the direct question form of a clause embedded after "if/whether"
+// in a when-I-ask directive: "when I ask if we're good" teaches the rule
+// for the question the user will actually ask ("are we good"). Handles the
+// common contracted ("we're good" -> "are we good", "it's ready" -> "is it
+// ready") and uncontracted ("we are good" -> "are we good") copula/auxiliary
+// shapes; anything else returns unchanged so the stimulus stays exact and
+// consult-time matching stays an exact normalized comparison (no fuzzy
+// hijack risk).
+function restoreQuestionForm(clause) {
+  const s = String(clause || '').trim();
+  let m;
+  if ((m = /^(we|you|they)'re\s+(.+)$/i.exec(s))) return `are ${m[1].toLowerCase()} ${m[2]}`;
+  if ((m = /^i'm\s+(.+)$/i.exec(s))) return `am i ${m[1]}`;
+  if ((m = /^(he|she|it|that|this|there)'s\s+(.+)$/i.exec(s))) return `is ${m[1].toLowerCase()} ${m[2]}`;
+  if ((m = /^(\w+)\s+(am|are|is|was|were|do|does|did|can|could|will|would|should|have|has|had)\s+(.+)$/i.exec(s))) {
+    return `${m[2].toLowerCase()} ${m[1].toLowerCase()} ${m[3]}`;
+  }
+  return s;
+}
+
 function extractInstruction(correctionText) {
   const text = String(correctionText || '').trim();
   if (!text) return null;
   let stimulus = null;
   let response = null;
-  let m = /\bwhen\s+i\s+say\s+(.+?)\s+just\s+(?:say|answer|reply|respond)\b\s*:?\s*(.+)$/i.exec(text)
-    || /\bwhen\s+i\s+say\s+(.+?)\s+you\s+say\s+(.+)$/i.exec(text);
+  let m = /\bwhen\s+i\s+(?:say|ask|tell)\s+(?:(if|whether|that)\s+)?(.+?)\s+just\s+(?:say|answer|reply|respond)\b\s*:?\s*(.+)$/i.exec(text);
   if (m) {
+    // Restore the question form on the raw clause (apostrophes intact —
+    // "we're good" needs its apostrophe for the inversion), then strip
+    // quotes as before.
+    let rawStimulus = String(m[2]).trim();
+    // "when I ask if we're good": the subordinator embeds the question the
+    // user will actually ask, so restore its direct form ("are we good") and
+    // the stored stimulus matches the future prompt exactly. "that"
+    // introduces a statement, not a question — no inversion there.
+    if (/^(if|whether)$/i.test(m[1] || '')) rawStimulus = restoreQuestionForm(rawStimulus);
+    stimulus = rawStimulus.replace(/["'“”‘’]/g, '').trim();
+    response = cleanInstructionResponse(m[3]);
+  } else if ((m = /\bwhen\s+i\s+(?:say|ask|tell)\s+(?:you\s+|me\s+)?(.+?)\s+you\s+say\s+(.+)$/i.exec(text))) {
     stimulus = String(m[1]).replace(/["'“”‘’]/g, '').trim();
     response = cleanInstructionResponse(m[2]);
   } else if ((m = /\bjust\s+(?:say|answer)\s*:\s*(.+)$/i.exec(text))) {
