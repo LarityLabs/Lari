@@ -33,6 +33,44 @@ asked about the thesis.
 - `index.html` — single-file agent build
 - `benchmarks/` — benchmark working areas
 
+## Talk to Lari
+
+Three ways, easiest first.
+
+### 1. Lari Workbench — chat in your browser
+
+Requirements: Node 20+ and Python 3 (or any static file server).
+
+```bash
+npm install
+python3 -m http.server 8080
+# open http://localhost:8080/index.html
+```
+
+The Workbench loads the model (the retained state) from `models/lari/current/swarm-model.json`.
+It must be served over HTTP — double-clicking index.html straight from disk won't load the model.
+Chat, teach him things ("the thesis is the swarm is the model. remember that"), and he recalls
+them later. Link a workspace folder in the UI if you want file read/write and model persistence
+back to disk.
+
+### 2. Telegram bot — one Lari per friend
+
+Each friend gets their own Lari (own brain file, own workspace). Group chat is shared context;
+learning is owner-only. Needs a bot token from @BotFather. Full steps: `lari-telegram/DEPLOY.md`.
+
+### 3. CLI adapter — one question in, JSON out (for scripts)
+
+```bash
+echo '{"prompt":"what does LARI stand for","model_path":"models/lari/current/swarm-model.json"}' | node scripts/lari_model_cli.js
+```
+
+Note: the CLI refuses models carrying stored benchmark-answer back-references (a contamination
+guard). The committed model has them from dev history, so point the CLI at a fresh model file —
+or just use the Workbench.
+
+The model file IS the brain. Back it up before experimenting. This repo tracks exactly one
+current model at `models/lari/current/swarm-model.json`; a newer model overwrites it.
+
 ## Run it
 
 ```bash
