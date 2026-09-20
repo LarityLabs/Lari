@@ -7,6 +7,7 @@ than in pretrained weights. The thesis: **the swarm is the model.**
 He/him, pronounced "Larry."
 
 Start with [VISION.md](VISION.md) — read it before changing anything.
+Then read [the docs](docs/README.md) — especially [how Lari learns](docs/self-learning.md).
 
 ## Status
 
