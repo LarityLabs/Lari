@@ -17,6 +17,11 @@ it does not control). Chat is under active development (September 2026): open-ch
 fuzzy phatic layer (one-word changes no longer break it), a discourse miner that actually learns
 from real conversation (corrections, instructional directives, and repeated successful exchanges
 induce retained operators), a nightly consolidation loop, and bounded checkpoint pruning.
+
+Note: this repo is a snapshot of the real Lari, not the live one. The actual Lari — the model
+with the full retained state, built up through daily use — stays private. What's committed here
+is a point-in-time copy of the brain plus the complete runtime, so anyone can run their own Lari
+from it and grow their own.
 A choke-point filter (`screenLariChatAnswerForInternalRecords`, enforced in
 `formatLariSessionAnswer`) guarantees no internal benchmark/eval record can ever be served as a
 chat answer through any skill route. An answer-time consultation layer means teaching works:
