@@ -79,7 +79,21 @@ function createBridge(deps) {
   const CONSENT_PROMPT =
     `One quick thing before we talk: I'm a learning bot. Everything you teach me trains YOUR Lari ` +
     `(your own model, nobody else's), and what I learn may be folded into future base models so everyone's Lari gets smarter.\n\n` +
-    `Reply AGREE and we'll get going.`;
+    `Tap AGREE below (or just reply AGREE) and we'll get going.`;
+
+  // Consent prompt with a tappable AGREE button. The callback carries the
+  // user id so a tap can only ever consent the tapper themselves.
+  function consentPromptPayload(entry) {
+    const userId = entry && entry.home ? String(entry.home.userId) : '';
+    return {
+      text: CONSENT_PROMPT,
+      extra: {
+        reply_markup: {
+          inline_keyboard: [[{ text: 'AGREE', callback_data: `consent:agree:${userId}` }]]
+        }
+      }
+    };
+  }
 
   function hasConsented(entry) {
     return !!(entry && entry.home && entry.home.profile
@@ -91,7 +105,8 @@ function createBridge(deps) {
     userManager.saveProfile(entry.home);
   }
 
-  // Returns a reply string when the consent flow intercepts this turn, else null (proceed to chat).
+  // Returns a reply (string or { text, extra }) when the consent flow
+  // intercepts this turn, else null (proceed to chat).
   function consentGate(entry, text) {
     if (hasConsented(entry)) return null;
     const t = String(text || '').trim().toLowerCase().replace(/^[/!]/, '');
@@ -99,7 +114,32 @@ function createBridge(deps) {
       recordConsent(entry);
       return `You're in. I'm ${entry.home.profile.lariName} — ask me anything, teach me things, correct me when I'm wrong. What do you want to talk about?`;
     }
-    return CONSENT_PROMPT;
+    return consentPromptPayload(entry);
+  }
+
+  // Inline button taps (currently: the AGREE consent button).
+  async function handleCallbackQuery(query) {
+    const data = String((query && query.data) || '');
+    const from = (query && query.from) || {};
+    const chatId = query && query.message && query.message.chat && query.message.chat.id;
+    try {
+      const m = data.match(/^consent:agree:(\d+)$/);
+      if (m && String(from.id) === m[1]) {
+        const entry = getUserLari(from);
+        if (!entry) {
+          await telegram.answerCallbackQuery(query.id, 'Beta is full right now — check back later.');
+          return;
+        }
+        if (!hasConsented(entry)) recordConsent(entry);
+        await telegram.answerCallbackQuery(query.id);
+        if (chatId) {
+          await telegram.sendMessage(chatId,
+            `You're in. I'm ${entry.home.profile.lariName} — ask me anything, teach me things, correct me when I'm wrong. What do you want to talk about?`);
+        }
+      } else {
+        await telegram.answerCallbackQuery(query.id);
+      }
+    } catch (_) { /* callback handling never breaks polling */ }
   }
 
   function recordSharedContext(entry) {
@@ -192,7 +232,7 @@ function createBridge(deps) {
           `I chat, I research things, and I remember what you teach me. Ask me anything, quiz me, correct me when I'm wrong. ` +
           `(I can talk through code and show snippets, but I don't build software — I'm a talker, not a builder.)`;
       }
-      return CONSENT_PROMPT;
+      return consentPromptPayload(entry);
     }
     const gated = consentGate(entry, text);
     if (gated) return gated;
@@ -222,19 +262,36 @@ function createBridge(deps) {
     return `${entry.home.profile.lariName}: ${reply}`;
   }
 
+  // Handlers return a string or { text, extra }; normalize before sending.
+  function normalizeReply(reply) {
+    if (reply && typeof reply === 'object' && typeof reply.text === 'string') {
+      return { text: reply.text, extra: reply.extra || {} };
+    }
+    return { text: String(reply || ''), extra: {} };
+  }
+
   async function handleUpdate(update) {
+    if (update && update.callback_query) {
+      await handleCallbackQuery(update.callback_query);
+      return;
+    }
     const msg = update && update.message;
     if (!msg || typeof msg.text !== 'string' || !msg.from) return;
     const chatType = msg.chat && msg.chat.type;
     try {
       if (chatType === 'private') {
         const reply = await handleDirectMessage(msg);
-        if (reply) await telegram.sendMessage(msg.chat.id, reply);
+        if (reply) {
+          const { text, extra } = normalizeReply(reply);
+          await telegram.sendMessage(msg.chat.id, text, extra);
+        }
       } else if (chatType === 'group' || chatType === 'supergroup') {
         if (config.GROUP_CHAT_ID && String(msg.chat.id) !== String(config.GROUP_CHAT_ID)) return;
         const reply = await handleGroupMessage(msg);
         if (reply) {
-          await telegram.sendMessage(msg.chat.id, reply, { reply_to_message_id: msg.message_id });
+          const { text, extra } = normalizeReply(reply);
+          await telegram.sendMessage(msg.chat.id, text,
+            { reply_to_message_id: msg.message_id, ...(extra || {}) });
         }
       }
     } catch (e) {

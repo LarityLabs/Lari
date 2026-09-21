@@ -24,11 +24,17 @@ function check(name, cond, detail) {
 
 function mockTransport() {
   const sent = [];
+  const callbacksAnswered = [];
   return {
     sent,
+    callbacksAnswered,
     async getUpdates() { return { ok: true, result: [] }; },
     async sendMessage(chatId, text, extra) {
       sent.push({ chatId, text, extra });
+      return { ok: true, result: {} };
+    },
+    async answerCallbackQuery(callbackQueryId, text) {
+      callbacksAnswered.push({ callbackQueryId, text });
       return { ok: true, result: {} };
     }
   };
@@ -131,8 +137,36 @@ function group(userId, name, text, msgId = 1, replyTo = null) {
   await bridge.handleUpdate({ message: { message_id: 9, from: { id: 111, first_name: 'Greg' }, chat: { id: -999, type: 'group' }, text: '@testlari_bot hi' } });
   check('foreign group ignored', transport.sent.length === 0);
 
-  console.log('== capped beta ==');
-  const capRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lari-tg-cap-'));
+  console.log('== consent via tappable AGREE button ==');
+  const btnRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lari-tg-btn-'));
+  const btnTransport = mockTransport();
+  const btnTelegram = createTelegramClient({ transport: btnTransport });
+  const btnConfig = {
+    LARI_ROOT: btnRoot, BASE_MODEL_PATH: '', BOT_USERNAME: 'testlari_bot',
+    BOT_USER_ID: '999', GROUP_CHAT_ID: '', MAX_USERS: 0
+  };
+  const btnBridge = createBridge({ config: btnConfig, runtime, telegram: btnTelegram });
+  // /start through handleUpdate so the reply goes through sendMessage with extra
+  await btnBridge.handleUpdate(dm(401, 'Zed', '/start'));
+  const consentMsg = btnTransport.sent[0];
+  const kb = consentMsg && consentMsg.extra && consentMsg.extra.reply_markup;
+  check('consent prompt carries inline keyboard',
+    !!(kb && kb.inline_keyboard && kb.inline_keyboard[0] && kb.inline_keyboard[0][0].text === 'AGREE'),
+    JSON.stringify((kb && kb.inline_keyboard) || null).slice(0, 80));
+  const cbData = kb.inline_keyboard[0][0].callback_data;
+  check('callback data pins the user id', cbData === 'consent:agree:401', cbData);
+  // Another user tapping Zed's button must not consent Zed
+  await btnBridge.handleUpdate({ callback_query: { id: 'cq-1', from: { id: 402, first_name: 'Mallory' }, data: cbData, message: { chat: { id: 401, type: 'private' } } } });
+  const zedProfile1 = JSON.parse(fs.readFileSync(path.join(btnRoot, 'users', '401', 'profile.json'), 'utf8'));
+  check('wrong-user tap does not consent', !(zedProfile1.trainingConsent && zedProfile1.trainingConsent.agreed));
+  // Zed taps his own button
+  await btnBridge.handleUpdate({ callback_query: { id: 'cq-2', from: { id: 401, first_name: 'Zed' }, data: cbData, message: { chat: { id: 401, type: 'private' } } } });
+  const zedProfile2 = JSON.parse(fs.readFileSync(path.join(btnRoot, 'users', '401', 'profile.json'), 'utf8'));
+  check('own tap records consent', !!(zedProfile2.trainingConsent && zedProfile2.trainingConsent.agreed));
+  check('callback query answered (spinner dismissed)', btnTransport.callbacksAnswered.some(c => c.callbackQueryId === 'cq-2'));
+  check('welcome sent after tap', btnTransport.sent.some(s => /You're in/.test(s.text)));
+
+  console.log('== capped beta ==');  const capRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lari-tg-cap-'));
   const capTransport = mockTransport();
   const capTelegram = createTelegramClient({ transport: capTransport });
   const capConfig = {

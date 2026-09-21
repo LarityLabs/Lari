@@ -37,10 +37,13 @@ function realTransport(token) {
   return {
     getUpdates: (offset, timeoutMs) => api('getUpdates', {
       offset, timeout: Math.min(60, Math.floor((timeoutMs || 30000) / 1000)),
-      allowed_updates: ['message']
+      allowed_updates: ['message', 'callback_query']
     }),
     sendMessage: (chatId, text, extra) => api('sendMessage', {
       chat_id: chatId, text, ...(extra || {})
+    }),
+    answerCallbackQuery: (callbackQueryId, text) => api('answerCallbackQuery', {
+      callback_query_id: callbackQueryId, ...(text ? { text } : {})
     })
   };
 }
@@ -72,6 +75,11 @@ function createTelegramClient(options = {}) {
       results.push(await transport.sendMessage(chatId, chunk, extra));
     }
     return results;
+  }
+
+  async function answerCallbackQuery(callbackQueryId, text) {
+    try { await transport.answerCallbackQuery(callbackQueryId, text); }
+    catch (_) { /* not all transports implement it */ }
   }
 
   /**
@@ -107,7 +115,7 @@ function createTelegramClient(options = {}) {
     }
   }
 
-  return { sendMessage, poll, chunkText };
+  return { sendMessage, answerCallbackQuery, poll, chunkText };
 }
 
 module.exports = { createTelegramClient, chunkText };
