@@ -16465,6 +16465,150 @@ function attachSwarmModelRuntime(globalScope) {
     return answer.trim();
   }
 
+  /**
+   * Novel constrained composer (2026-09-21): content-first realization.
+   *
+   * The old path fabricated filler sentences ("Another useful point supports
+   * X clearly.", "detail detail detail") to satisfy structural constraints.
+   * The composer inverts this: it assembles a pool of REAL, sourced content
+   * units first (prior-lane sentences + WordNet definitional knowledge), then
+   * solves the constraint-satisfaction problem over that pool. Structural
+   * demand that exceeds the pool does not get padded -- it gets an honest
+   * shortfall, shaped to every satisfiable constraint. The composer never
+   * emits a sentence it cannot source.
+   */
+  function gatherLariComposerContentPool(prompt = '', plan = {}, fallbackBody = '') {
+    const pool = [];
+    const seen = new Set();
+    const fillerPattern = /useful concrete detail|another useful point|offers useful detail|calm words provide|receives useful practical attention|the safe implementation validates|quiet light moves|the setup takes an unexpected turn|dear friend\. your voice matters|compliant response/i;
+    // Debris from other lanes' deflections: never present these as content.
+    const debrisPattern = /i could not derive|not enough local|i do not have enough|i don't have enough|i do not have solid|as an ai\b|as a language model|i'm not able to|i am not able to|insufficient local|should learn supporting facts|not well covered in local memory|confidence is low because/i;
+    // Derogatory slang senses WordNet carries for some headwords: never emit.
+    const pejorativePattern = /\bdull\b|\bunattractive\b|\bunpleasant\b|\bstupid\b|\bugly\b|\bworthless\b|\bvulgar\b/i;
+    // Topic-relevance: fallback sentences must share a content token with the
+    // topic/keywords, otherwise unrelated learned facts leak into the pool
+    // ("Off-by-one means..." has no business in a Japan trip post).
+    const topicTokens = new Set();
+    for (const tok of String(plan.topicPhrase || '').toLowerCase().match(/[a-z][a-z-]{2,}/g) || []) topicTokens.add(tok);
+    for (const item of (plan.keywords || [])) {
+      for (const tok of String(item.word || '').toLowerCase().match(/[a-z][a-z-]{2,}/g) || []) topicTokens.add(tok);
+    }
+    const sharesTopicToken = text => {
+      if (!topicTokens.size) return true;
+      const lower = String(text).toLowerCase();
+      for (const tok of topicTokens) {
+        if (new RegExp(`\\b${tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(lower)) return true;
+      }
+      return false;
+    };
+    const add = (text, requireTopic = false) => {
+      const clean = String(text || '').replace(/\s+/g, ' ').trim();
+      if (clean.length < 25 || clean.length > 500) return;
+      if (!/[.!?]["']?$/.test(clean)) return; // must be a complete sentence
+      const key = clean.toLowerCase();
+      if (seen.has(key) || fillerPattern.test(clean) || debrisPattern.test(clean)) return;
+      if (requireTopic && !sharesTopicToken(clean)) return;
+      seen.add(key);
+      pool.push(clean);
+    };
+    const splitSentences = text => String(text || '').match(/[^.!?]+[.!?]+["']?/g) || [];
+    // 1. Real content from earlier lanes (research, taught facts, chat).
+    //    Topic-gated: unrelated learned facts must not leak in.
+    for (const sentence of splitSentences(fallbackBody)) add(sentence, true);
+    // 2. WordNet definitional knowledge for topic and keyword terms.
+    const terms = [];
+    const pushTerms = value => {
+      for (const tok of String(value || '').toLowerCase().match(/[a-z][a-z-]{2,}/g) || []) {
+        if (!terms.includes(tok) && terms.length < 8) terms.push(tok);
+      }
+    };
+    pushTerms(plan.topicPhrase);
+    for (const item of (plan.keywords || [])) pushTerms(item.word);
+    if (nodeWordNetCapability && typeof nodeWordNetCapability.define === 'function') {
+      const singularize = value => {
+        const lower = String(value || '').toLowerCase();
+        if (lower.length > 3 && /s$/.test(lower) && !/ss$/.test(lower)) {
+          try {
+            const singular = lower.replace(/s$/, '');
+            if ((nodeWordNetCapability.define(singular) || []).length) return singular;
+          } catch (_) { /* fall through to the original term */ }
+        }
+        return lower;
+      };
+      for (const term of terms) {
+        // Keep every sentence on-topic: the subject is the queried term
+        // (singularized), never an arbitrary synonym like "cad".
+        const subject = singularize(term);
+        const titled = `${subject.charAt(0).toUpperCase()}${subject.slice(1)}`;
+        try {
+          const senses = nodeWordNetCapability.define(term) || [];
+          for (const sense of senses.slice(0, 4)) {
+            const gloss = String(sense.gloss || '').replace(/\s*"[^"]*"\s*/g, ' ').replace(/\s+/g, ' ').trim().replace(/;.*$/, '');
+            if (gloss.length >= 10 && !pejorativePattern.test(gloss)) add(`${titled} is ${gloss}.`);
+            const hypernym = String((sense.hypernyms || [])[0] || '').replace(/_/g, ' ').trim();
+            if (hypernym && !pejorativePattern.test(hypernym)) add(`${titled} is a kind of ${hypernym}.`);
+          }
+        } catch (_) { /* WordNet is optional; the pool degrades gracefully */ }
+      }
+    }
+    return pool.slice(0, 64);
+  }
+
+  function lariComposerSentenceDemand(plan = {}) {
+    const sentences = plan.exactSentences || plan.minSentences || 0;
+    const words = plan.exactWords || plan.minWords || 0;
+    return Math.max(
+      sentences,
+      plan.paragraphCount || 0,
+      plan.sectionCount || 0,
+      plan.bulletCount || 0,
+      plan.lineCount || 0,
+      plan.highlightCount || 0,
+      plan.twoResponses ? 2 : 0,
+      words ? Math.ceil(words / 10) : 0
+    );
+  }
+
+  function lariComposerPoolWords(pool) {
+    return (pool.join(' ').match(/\b[\w'-]+\b/g) || []).length;
+  }
+
+  // Honest shortfall: every satisfiable constraint is still honored, but no
+  // sentence is fabricated to meet a count the pool cannot cover.
+  function shapeLariComposerShortfall(prompt = '', plan = {}, pool = [], demand = 0, mode = '') {
+    const topic = plan.topicPhrase || 'this topic';
+    let text;
+    if (mode === 'creative') {
+      const kind = (String(prompt).match(/\b(poems?|limericks?|sonnets?|songs?(\s+lyrics)?|jokes?|letters?)\b/i) || [])[1] || 'that';
+      text = `I cannot compose ${kind}; I am a deterministic system with no generative language model, so I will not fake one.`;
+    } else {
+      const requirement = demand > 0 ? 'to meet that requirement' : 'to do that well';
+      text = `I do not have enough grounded local knowledge of ${topic} ${requirement}, so I will not pad this with filler.`;
+    }
+    if (pool.length) text += ` What I can say from local knowledge: ${pool.join(' ')}`;
+    let answer = text;
+    for (const item of (plan.keywords || [])) {
+      const relation = String(item.relation || 'at least').toLowerCase();
+      if ((relation === 'at least' || relation === 'more than' || relation === 'exactly') && item.word) {
+        const pattern = new RegExp(`\\b${String(item.word).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        if (!pattern.test(answer)) answer = `${answer} ${item.word}`.trim();
+      }
+    }
+    if (plan.lowerCase) answer = answer.toLowerCase();
+    if (plan.upperCase) answer = answer.toUpperCase();
+    if (plan.noComma) answer = answer.replace(/,/g, '');
+    if (plan.title && !/<<[^<>\n]+>>/.test(answer)) answer = `<<Focused Response>>\n${answer}`;
+    if (plan.quote && !(answer.startsWith('"') && answer.endsWith('"'))) answer = `"${answer.replace(/"/g, "'")}"`;
+    if (plan.postscript && !/P\.S\./i.test(answer)) answer = `${answer}\nP.S. I kept this short rather than fabricating content.`;
+    if (plan.requiredPrefix && !answer.toLowerCase().startsWith(String(plan.requiredPrefix).toLowerCase())) answer = `${plan.requiredPrefix} ${answer}`;
+    if (plan.sentenceEnding) answer = answer.replace(/[.!?]+(?=(?:["']?\s|["']?$))/g, plan.sentenceEnding);
+    if (plan.exactEnd && !answer.trim().toLowerCase().endsWith(String(plan.exactEnd).toLowerCase())) {
+      answer = `${answer.replace(/\s+$/, '')}. ${plan.exactEnd}`;
+    }
+    if (plan.repeatPrompt) answer = `${plan.repeatPrompt}\n\n${answer}`.trim();
+    return answer.trim();
+  }
+
   function synthesizeLariConstraintProgramAnswer(raw = '', fallback = '') {
     const prompt = String(raw || '').trim();
     if (!prompt || !isLariStrongInstructionConstraintPrompt(prompt)) return null;
@@ -16594,7 +16738,8 @@ function attachSwarmModelRuntime(globalScope) {
     if (topicMatch) plan.topicPhrase = topicMatch[1].replace(/^(?:one|a)\s+(?:brief|short|compact|lowercase)\s+(?:sentence|line|note|announcement)\s+/i, '').trim();
     if (!plan.topicPhrase) {
       const reasonTopic = prompt.match(/\bexplain\s+(?:why|how)\s+([^,.;\n]+)/i);
-      const identityTopic = prompt.match(/\bwhat\s+(?:is|are)\s+([A-Za-z0-9_-]+)(?=\s+(?:in|using|with)\b|[?.!,]|$)/i);
+      const identityTopic = prompt.match(/\bwhat\s+(?:is|are)\s+(?:an?\s+|the\s+)?([A-Za-z0-9_-]+)(?=\s+(?:in|using|with)\b|[?.!,]|$)/i) ||
+        prompt.match(/\bwhy\s+(?:is|are|do|does|were|was)\s+([^,.;\n]+?)(?=\s+(?:in|using|with)\b|[?.!,]|$)/i);
       const colonTopic = !/\b(?:json|exactly|exact format|return only)\b/i.test(prompt)
         ? prompt.match(/^(?:answer|respond|reply)[^:\n]{0,100}:\s*([^.;\n]+)/i)
         : null;
@@ -16710,6 +16855,11 @@ function attachSwarmModelRuntime(globalScope) {
     plan.exactWords = exactWordMatch ? Math.min(2400, numberValue(exactWordMatch[1])) : 0;
     plan.minWords = minWordMatch ? Math.min(2400, numberValue(minWordMatch[1]) + (/more than/i.test(minWordMatch[0]) ? 1 : 0)) : 0;
     plan.maxWords = maxWordMatch ? Math.max(1, numberValue(maxWordMatch[1]) - (/less than|fewer than/i.test(maxWordMatch[0]) ? 1 : 0)) : 0;
+    // Bare "write a 300 word essay / summary / article": an implicit minimum.
+    if (!plan.exactWords && !plan.minWords) {
+      const bareWordMatch = prompt.match(/\b(\d{2,4})\s+words?\s+(?:essay|summary|article|response|answer|report)\b/i);
+      if (bareWordMatch) plan.minWords = Math.min(2400, Number(bareWordMatch[1]));
+    }
 
     plan.twoResponses = /two different (?:[A-Za-z-]+\s+){0,3}(?:responses|replies|critiques)|exactly two (?:[A-Za-z-]+\s+){0,3}(?:responses|replies|critiques)|write two (?:jokes|limericks|responses|replies)/i.test(prompt);
     const separatorMatch = prompt.match(/separator\s+([*\-_=]{3,})|separat(?:e|ed).{0,60}?([*\-_=]{3,})|with\s+(\d+)\s+asterisk/i);
@@ -16856,6 +17006,33 @@ function attachSwarmModelRuntime(globalScope) {
       || plan.paragraphCount || plan.sectionCount || plan.bulletCount || plan.lineCount
       || plan.twoResponses || plan.placeholderCount || plan.highlightCount || plan.capitalWordCount;
     if (structuralOnly && structuralFabrication && !base && !plan.topicPhrase) return null;
+    // ---- Novel constrained composer (2026-09-21) ----
+    // Content-first: gather real sourced sentences, then satisfy the
+    // structural demand from the pool. Demand beyond the pool becomes an
+    // honest shortfall, never fabricated filler.
+    //
+    // Creative/generative tasks (poem, joke, song, letter) with no real base:
+    // honest refusal instead of template fabrication -- checked first, even
+    // when the pool could cover the shape, because true sentences arranged
+    // in lines still are not a poem.
+    if (!base && /\b(poems?|limericks?|sonnets?|songs?(\s+lyrics)?|jokes?|funny|letters?)\b/i.test(prompt)) {
+      return shapeLariComposerShortfall(prompt, plan, [], 0, 'creative');
+    }
+    const composerPool = gatherLariComposerContentPool(prompt, plan, fallbackBody);
+    const composerDemand = lariComposerSentenceDemand(plan);
+    const composerWordDemand = Math.max(plan.exactWords || 0, plan.minWords || 0);
+    if (composerDemand > 0 && (composerPool.length < composerDemand || lariComposerPoolWords(composerPool) < composerWordDemand)) {
+      return shapeLariComposerShortfall(prompt, plan, composerPool, composerDemand);
+    }
+    const composerActive = composerDemand > 0 && composerPool.length > 0;
+    let composerCursor = 0;
+    // Non-structural constraints (style, case, title, language, word caps)
+    // with no real base: shape the pool when it has content, or shortfall
+    // honestly when the pool is dry. No more single-sentence base filler.
+    if (!composerActive && !base && parsedConstraint) {
+      if (composerPool.length) base = composerPool.join(' ');
+      else return shapeLariComposerShortfall(prompt, plan, [], 0, 'knowledge');
+    }
     if (!base) {
       const alphabeticCharacterConstraint = plan.characterConstraints.some(item => /[A-Za-z]/.test(item.character));
       if (alphabeticCharacterConstraint) base = `${plan.topicPhrase || 'calm words'} stay useful now.`;
@@ -16867,9 +17044,12 @@ function attachSwarmModelRuntime(globalScope) {
       else base = 'A clear response addresses the requested topic with useful concrete detail.';
     }
     base = base.replace(/\s+/g, ' ').trim();
+    if (composerActive) base = ''; // pool carries the real content; units draw from it, not from fabricated base
 
     const topicText = plan.topicPhrase || 'the requested topic';
     const sentenceFor = index => {
+      if (composerActive && composerCursor < composerPool.length) return composerPool[composerCursor++];
+      if (composerActive) return composerPool[composerCursor++ % composerPool.length]; // safety net; demand caps draws
       if (index === 0 && plan.topicPhrase) return `${topicText} receives useful practical attention.`;
       if (index === 0) return 'Calm words provide useful practical detail.';
       return `Another useful point supports ${topicText} clearly.`;
@@ -16878,7 +17058,9 @@ function attachSwarmModelRuntime(globalScope) {
 
     let units = [];
     if (plan.twoResponses) {
-      units = ['The first reply offers a clear and friendly answer.', 'The second reply gives a different useful perspective.'];
+      units = (composerActive && composerPool.length >= 2)
+        ? [composerPool[composerCursor++], composerPool[composerCursor++]]
+        : ['The first reply offers a clear and friendly answer.', 'The second reply gives a different useful perspective.'];
     } else if (plan.lineCount) {
       units = Array.from({ length: plan.lineCount }, (_, index) => sentenceFor(index));
     } else if (plan.bulletCount) {
@@ -16920,7 +17102,7 @@ function attachSwarmModelRuntime(globalScope) {
         // instead of discarding it for fabricated filler.
         const sentences = (base.match(/[^.!?]+[.!?]+["']?/g) || [base]).map(item => item.trim()).filter(Boolean);
         units = sentences.slice(0, Math.max(target, 1));
-        while (units.length < target && (plan.exactSentences || plan.minSentences)) {
+        while (units.length < target && (plan.exactSentences || plan.minSentences) && !composerActive) {
           units.push(`Another useful point supports ${topicText} clearly.`);
         }
         if (plan.highlightCount && units.length) {
@@ -16930,9 +17112,14 @@ function attachSwarmModelRuntime(globalScope) {
         units = Array.from({ length: target }, (_, index) => `${index < plan.highlightCount ? `*Focus ${index + 1}* ` : ''}${sentenceFor(index)}`);
       }
     } else if (plan.highlightCount) {
-      units = Array.from({ length: plan.highlightCount }, (_, index) => `*Focus ${index + 1}* offers useful detail about the requested topic.`);
+      units = Array.from({ length: plan.highlightCount }, (_, index) => {
+        const body = composerActive ? sentenceFor(index) : 'offers useful detail about the requested topic.';
+        return `*Focus ${index + 1}* ${body}`;
+      });
     } else {
-      units = [base];
+      // Composer-active: the pool is the content; word-count trimming below
+      // shapes it mechanically (real words, no fabrication).
+      units = [composerActive && composerPool.length ? composerPool.join(' ') : base];
     }
 
     const joinUnits = () => {
@@ -17009,7 +17196,7 @@ function attachSwarmModelRuntime(globalScope) {
     const structural = plan.paragraphCount || plan.sectionCount || plan.bulletCount || plan.twoResponses;
     const reservedEndWords = plan.exactEnd && !answer.toLowerCase().includes(plan.exactEnd.toLowerCase()) ? wordCount(plan.exactEnd) : 0;
     const requestedWords = Math.max(0, (plan.exactWords || plan.minWords) - reservedEndWords);
-    if (requestedWords && wordCount(answer) < requestedWords) appendBeforeTerminal(Array.from({ length: requestedWords - wordCount(answer) }, () => 'detail').join(' '));
+    if (requestedWords && wordCount(answer) < requestedWords && !composerActive) appendBeforeTerminal(Array.from({ length: requestedWords - wordCount(answer) }, () => 'detail').join(' '));
     const exactBodyWords = Math.max(0, plan.exactWords - reservedEndWords);
     if (plan.exactWords && wordCount(answer) > exactBodyWords && !structural) {
       const words = answer.match(/\b[\w'-]+\b/g) || [];
