@@ -16603,10 +16603,15 @@ function attachSwarmModelRuntime(globalScope) {
     for (const item of (plan.keywords || [])) {
       for (const tok of String(item.word || '').toLowerCase().match(/[a-z][a-z-]{2,}/g) || []) topicTokens.add(tok);
     }
+    // When the plan could not name a topic, fall back to the prompt's own
+    // content tokens for gating (fail-closed): an unrelated researched entry
+    // ("Raymond III, Count of Tripoli") must never answer a quokka prompt
+    // just because the plan's topic phrase came back empty.
+    const gateTokens = topicTokens.size ? topicTokens : new Set(semanticTokens(prompt));
     const sharesTopicToken = text => {
-      if (!topicTokens.size) return true;
+      if (!gateTokens.size) return false;
       const lower = String(text).toLowerCase();
-      for (const tok of topicTokens) {
+      for (const tok of gateTokens) {
         if (new RegExp(`\\b${tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(lower)) return true;
       }
       return false;
@@ -16630,9 +16635,9 @@ function attachSwarmModelRuntime(globalScope) {
       for (const entry of lariResearchedKnowledge) {
         const entryTokens = new Set();
         for (const tok of String(entry.topic || '').toLowerCase().match(/[a-z][a-z-]{2,}/g) || []) entryTokens.add(tok);
-        let entryRelevant = !topicTokens.size;
+        let entryRelevant = false;
         for (const tok of entryTokens) {
-          if (topicTokens.has(tok)) { entryRelevant = true; break; }
+          if (gateTokens.has(tok)) { entryRelevant = true; break; }
         }
         if (!entryRelevant) continue;
         // This entry covers its topic's words better than dictionary
@@ -16870,8 +16875,14 @@ function attachSwarmModelRuntime(globalScope) {
     plan.exactEnd = String(endQuoted?.[1] || endBlock?.[1] || endUnquotedPhrase?.[1] || endBare?.[1] || '').trim();
 
     const topicMatch = prompt.match(/\babout\s+(?:a\s+|an\s+|the\s+)?([^,.;\n]+?)(?=\s+(?:in\s+which|that\s+(?:contains?|mentions?|uses?|has|must)|using|with\s+(?:exactly|at least|at most|no|only)|and\s+(?:use|include|do not|end)|where\b)|[,.;\n]|$)/i) ||
-      prompt.match(/\b(?:sentence|note|response|answer|article|paragraph)\s+on\s+(?:a\s+|an\s+|the\s+)?([^,.;\n]+?)(?=\s+(?:in\s+which|that\s+(?:contains?|mentions?|uses?|has|must)|using|with\s+(?:exactly|at least|at most|no|only)|and\s+(?:use|include|do not|end)|where\b)|[,.;\n]|$)/i);
-    if (topicMatch) plan.topicPhrase = topicMatch[1].replace(/^(?:one|a)\s+(?:brief|short|compact|lowercase)\s+(?:sentence|line|note|announcement)\s+/i, '').trim();
+      prompt.match(/\b(?:sentence|note|response|answer|article|paragraph|summary|overview|description|profile|essay)\s+(?:on|of)\s+(?:a\s+|an\s+|the\s+)?([^,.;\n]+?)(?=\s+(?:in\s+which|that\s+(?:contains?|mentions?|uses?|has|must)|using|with\s+(?:exactly|at least|at most|no|only)|and\s+(?:use|include|do not|end)|where\b)|[,.;\n]|$)/i);
+    if (topicMatch) {
+      const candidate = topicMatch[1].replace(/^(?:one|a)\s+(?:brief|short|compact|lowercase)\s+(?:sentence|line|note|announcement)\s+/i, '').trim();
+      // A URL captured here (e.g. "summary of https://en.wikipedia.org/wiki/...")
+      // is not a topic phrase; leave topicPhrase empty so the Wikipedia-URL
+      // extractor below names the topic instead.
+      if (!/^https?:\/\//i.test(candidate)) plan.topicPhrase = candidate;
+    }
     if (!plan.topicPhrase) {
       // A Wikipedia URL in the prompt names the topic directly
       // ("summary of the wikipedia page https://en.wikipedia.org/wiki/Raymond_III,_Count_of_Tripoli").
@@ -17233,13 +17244,21 @@ function attachSwarmModelRuntime(globalScope) {
       const targetSentences = Math.max(plan.paragraphCount, targetSentenceCount || plan.paragraphCount);
       let sentenceOffset = 0;
       units = Array.from({ length: plan.paragraphCount }, (_, index) => {
-        const start = plan.nthParagraph === index + 1 && plan.nthFirstWord ? plan.nthFirstWord : (index === 0 ? 'The' : 'Another');
         const highlight = index < plan.highlightCount ? ` *focus ${index + 1}*` : '';
         const label = plan.paragraphLabel ? `${plan.paragraphLabel} ${index + 1}\n` : '';
         const count = Math.floor(targetSentences / plan.paragraphCount) + (index < targetSentences % plan.paragraphCount ? 1 : 0);
         const sentences = Array.from({ length: count }, (_, sentenceIndex) => {
           const generated = sentenceFor(sentenceOffset++);
-          return sentenceIndex === 0 ? `${start} ${generated.charAt(0).toLowerCase()}${generated.slice(1)}` : generated;
+          if (sentenceIndex !== 0) return generated;
+          const gen = generated.trim();
+          // An explicitly demanded first word still wins (nth-paragraph instruction).
+          if (plan.nthParagraph === index + 1 && plan.nthFirstWord) {
+            return `${plan.nthFirstWord} ${gen.charAt(0).toLowerCase()}${gen.slice(1)}`;
+          }
+          // No fabricated discourse starter: prepending "The"/"Another" to a
+          // real sentence produces "The the quokka..." and
+          // "Another like other marsupials...". Capitalize and use as-is.
+          return gen.charAt(0).toUpperCase() + gen.slice(1);
         }).join(' ');
         return `${label}${sentences.replace(/[.!?]+\s*$/, '')}${highlight}.`;
       });
@@ -30547,6 +30566,53 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
               response.autonomousResearch.retained = true;
             }
           }
+        }
+      }
+    }
+    // Small Lari research-learn-answer loop: when the constrained composer
+    // answers with an honest knowledge shortfall, research the topic
+    // (deterministic retrieval, zero external model calls), persist what was
+    // learned, and retry the turn once with the new knowledge in the
+    // composer's pool. This runs on the ordinary chat path, not just the
+    // benchmark runner, so Small Lari learns what it does not know in live
+    // conversation too.
+    // NOTE: the answer text lives in response.answer (response.message is the
+    // echoed prompt), so the shortfall check must read the answer fields.
+    const composerResponseText = typeof response === 'string' ? response
+      : String(response?.answer || response?.text || response?.reply || '');
+    const composerKnowledgeShortfall = composerResponseText.length > 0
+      && /i do not have enough grounded local knowledge/i.test(composerResponseText);
+    if (response && composerKnowledgeShortfall
+      && typeof message === 'string' && message.trim().length > 0
+      && context.__lariComposerResearchAttempted !== true
+      && context.autoLariComposerResearch !== false) {
+      const found = await lariResearchForPrompt(message);
+      if (found && found.added > 0) {
+        const retryContext = {
+          ...context,
+          __lariComposerResearchAttempted: true,
+          autoResearchOnUncertainty: false
+        };
+        const retried = sendMessageToLari(model, message, retryContext);
+        if (retried && typeof retried === 'object') {
+          retried.trace = [
+            ...(retried.trace || []),
+            ...(response.trace || []),
+            {
+              phase: 'composer_research_retry',
+              topic: found.topic,
+              added: found.added,
+              sources: found.sources,
+              external_model_calls: 0
+            }
+          ];
+          retried.composerResearch = {
+            topic: found.topic,
+            added: found.added,
+            sources: found.sources,
+            external_model_calls: 0
+          };
+          response = retried;
         }
       }
     }

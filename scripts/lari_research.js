@@ -169,8 +169,12 @@ function inferResearchTopic(prompt) {
   }
   const aboutMatch = text.match(/\babout\s+([^.,;!?]{4,80}?)(?:,|\.|;|!|\?|\bwith\b|\bwithout\b|$)/i)
     || text.match(/\bessay\s+on\s+([^.,;!?]{4,80}?)(?:,|\.|;|!|\?|$)/i)
-    || text.match(/\barticle\s+(?:about|on)\s+([^.,;!?]{4,80}?)(?:,|\.|;|!|\?|$)/i);
-  if (aboutMatch) return { topic: aboutMatch[1].trim(), urls: [] };
+    || text.match(/\barticle\s+(?:about|on)\s+([^.,;!?]{4,80}?)(?:,|\.|;|!|\?|$)/i)
+    || text.match(/\b(?:summary|overview|description|profile)\s+(?:of|on)\s+([^.,;!?]{4,80}?)(?:,|\.|;|!|\?|$)/i);
+  if (aboutMatch) {
+    const cleaned = aboutMatch[1].trim().replace(/^(?:the|a|an)\s+/i, '');
+    if (cleaned) return { topic: cleaned, urls: [] };
+  }
   const contentWords = [...topicTokens(text)].slice(0, 6);
   if (contentWords.length >= 2) return { topic: contentWords.join(' '), urls: [] };
   return { topic: '', urls: [] };
