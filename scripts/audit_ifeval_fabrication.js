@@ -23,8 +23,22 @@ const FILLER = [
   /offers useful detail/i,
   /calm words provide/i,
   /receives useful practical attention/i,
-  /(\bdetail\b[ ,]*){3,}/i,
+  /(\bdetail\d*\b[ ,]*){3,}/i,
   /\*focus \d+\* offers useful/i,
+  // Placeholder scaffolding: shape with no content.
+  /sentence \d+ follows the requested topic/i,
+  /paragraph \d+ follows the requested topic/i,
+  /this section follows the request/i,
+  /(\bword\d+\b[ ]*){3,}/i,
+  /^\s*first response\.\s*$/im,
+  /^\s*second response\.\s*$/im,
+  /(\bitem \d+\b[\s,]*){2,}/i,
+  /(\bWORD\d+\b[ ]*){2,}/i,
+  /\bsubject key point \d+\b/i,
+  /the safe implementation validates its input/i,
+  /quiet light moves through the scene/i,
+  /the setup takes an unexpected turn/i,
+  /dear friend\. your voice matters/i,
 ];
 const SHORTFALL = /i do not have enough grounded local knowledge/i;
 

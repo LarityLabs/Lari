@@ -3,9 +3,16 @@
  * IFEval response collector for Small Lari.
  *
  * For each of the 541 IFEval prompts, gets Lari's response with a FRESH
- * in-memory model clone (no cross-prompt learning contamination), checkpoint
- * persistence disabled, and writes {prompt, response} JSONL for the official
- * IFEval scorer (instruction_following_eval/evaluation_main.py).
+ * in-memory model clone and checkpoint persistence disabled, and writes
+ * {prompt, response} JSONL for the official IFEval scorer
+ * (instruction_following_eval/evaluation_main.py).
+ *
+ * Research-learn-answer loop: when Lari answers with a knowledge shortfall,
+ * it researches the topic (deterministic retrieval, zero model calls),
+ * persists the learned facts to models/lari/current/researched-knowledge.json,
+ * and retries the turn once. Researched facts are shared across prompts
+ * within a run -- that is persistent learning working as designed, not
+ * contamination: every fact carries its source.
  *
  * Zero external model calls. Read-only on the runtime and base model.
  *
@@ -79,8 +86,13 @@ async function turn(model, text) {
   }
   log(`already have ${done.size} responses, resuming`);
 
-  let n = 0, answered = 0, timedOut = 0;
+  let n = 0, answered = 0, timedOut = 0, researched = 0;
   const t0 = Date.now();
+  // Research-learn-answer loop: when Lari answers with a knowledge shortfall,
+  // it researches the topic (deterministic retrieval, zero model calls),
+  // persists what it learned, and retries the turn once with the new
+  // knowledge in the composer's pool.
+  const KNOWLEDGE_SHORTFALL = /i do not have enough grounded local knowledge/i;
   for (const item of prompts) {
     if (n < OFFSET) { n++; continue; }
     if (n >= OFFSET + LIMIT) break;
@@ -91,6 +103,14 @@ async function turn(model, text) {
     let response = '';
     try {
       response = await turn(model, item.prompt);
+      if (KNOWLEDGE_SHORTFALL.test(response)) {
+        const found = await runtime.lariResearchForPrompt(item.prompt);
+        if (found && found.added > 0) {
+          researched++;
+          log(`research: "${String(found.topic).slice(0, 60)}" +${found.added} sentences from ${found.sources.length} source(s)`);
+          response = await turn(model, item.prompt);
+        }
+      }
       answered++;
     } catch (err) {
       timedOut++;
@@ -99,9 +119,9 @@ async function turn(model, text) {
     fs.appendFileSync(RESPONSES, JSON.stringify({ key: item.key, prompt: item.prompt, response }) + '\n');
     if (answered % 25 === 0) {
       const el = ((Date.now() - t0) / 1000).toFixed(0);
-      log(`progress: ${answered} answered, ${timedOut} timeouts, ${el}s elapsed`);
+      log(`progress: ${answered} answered, ${timedOut} timeouts, ${researched} researched, ${el}s elapsed`);
     }
   }
   const el = ((Date.now() - t0) / 60000).toFixed(1);
-  log(`DONE: ${answered} answered, ${timedOut} timeouts in ${el} min -> ${RESPONSES}`);
+  log(`DONE: ${answered} answered, ${timedOut} timeouts, ${researched} researched in ${el} min -> ${RESPONSES}`);
 })().catch(err => { console.error('FATAL', err); process.exit(1); });
