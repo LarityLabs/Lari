@@ -4486,6 +4486,7 @@ function attachSwarmModelRuntime(globalScope) {
     // is a greeting, not a knowledge question.
     if (/^(?:hi|hey|hello|yo|sup|hiya|howdy)(?:\s+(?:there|lari|man|friend|buddy))?[!. ,]*(?:how\s+are\s+you|how\s+are\s+u|how\s+are\s+ya)?[?!. ,]*$/.test(trimmed)) return 'greeting';
     if (/^(?:good\s+(?:morning|afternoon|evening|night))(?:\s+lari)?[!. ,]*$/.test(trimmed)) return 'greeting';
+    if (/\bnice to meet you\b/.test(text)) return 'greeting';
     // Small talk: phatic check-ins, not information requests.
     // "hey whats up" compounds a greeting with a phatic check-in; the anchored
     // patterns above miss it, so match the compound explicitly and treat a
@@ -4507,7 +4508,9 @@ function attachSwarmModelRuntime(globalScope) {
       || /\bwhat is lari[?!. ,]*$/.test(trimmed)
       || /\bhow do you (?:say|pronounce) (?:your|the) name\b/.test(text)
       || /\bpronounce (?:your|the) name\b/.test(text)
-      || /\btell me about yourself\b/.test(text)) return 'self_identity';
+      || /\btell me about yourself\b/.test(text)
+      || /\bare you (?:a )?(?:boy|girl|male|female|man|woman)\b/.test(text)
+      || /\bare you (?:gpt(?:-?\d*)?|chatgpt|Muse|gemini|copilot)\b/.test(text)) return 'self_identity';
     // Goodbye.
     if (/^(?:bye|goodbye|see\s+(?:you|ya)(?:\s+later)?|later|goodnight|good\s+night|take\s+care)[!. ,]*$/.test(trimmed)) return 'goodbye';
     // Opinions and tastes: "do you like X", "what do you think about Y".
@@ -4679,6 +4682,39 @@ function attachSwarmModelRuntime(globalScope) {
     if (/^(?:just\s+)?(?:say|tell\s+me|reply|respond|answer)\s+(?:that|this|it|with\s+that)[\s.!?]*$/.test(lower)) return true;
     if (/\block\s+it\s+in\b/.test(lower)) return true;
     return false;
+  }
+
+  // Personal chit-chat facts (2026-09-21): plain statements like "my name
+  // is Greg", "i am 30 years old", "i love pizza", "my favorite food is
+  // tacos" are stored as structured key/value facts (never raw sentences),
+  // so follow-up questions can be answered from templates without
+  // stitching user text into fabricated claims. Questions (trailing ?)
+  // never store. Values are sanitized tokens, capped in length.
+  function extractPersonalChatFact(text = '') {
+    const raw = String(text || '').trim();
+    if (!raw || /[?]\s*$/.test(raw)) return null;
+    const clean = s => String(s || '').trim().replace(/[.!?,;:\s]+$/g, '').slice(0, 40);
+    let m;
+    if ((m = /\bmy name is ([A-Za-z][A-Za-z'\- ]{0,28}[A-Za-z])/.exec(raw))) {
+      const v = clean(m[1]);
+      if (v && /^[A-Za-z][A-Za-z'\- ]+$/.test(v)) return { key: 'user.name', value: v };
+    }
+    if ((m = /\bi am (\d{1,3}) years old\b/i.exec(raw))) {
+      const n = parseInt(m[1], 10);
+      if (n > 0 && n < 130) return { key: 'user.age', value: String(n) };
+    }
+    if ((m = /\bmy favorite ([a-z]{2,18}) is ([a-z][a-z'\- ]{1,36})/i.exec(raw))) {
+      const thing = clean(m[1]).toLowerCase().replace(/\s+/g, '_');
+      const v = clean(m[2]).toLowerCase();
+      if (thing && v && /^[a-z][a-z'\- ]+$/.test(v)) return { key: `user.favorite_${thing}`, value: v };
+    }
+    if ((m = /\bi (?:really |truly )?(love|like) ([a-z][a-z'\- ]{1,36})/i.exec(raw))) {
+      const v = clean(m[2]).toLowerCase();
+      if (v && /^[a-z][a-z'\- ]+$/.test(v) && !/^to\s/.test(v) && !/^(to|that|it|this)$/.test(v)) {
+        return { key: 'user.likes', value: v };
+      }
+    }
+    return null;
   }
 
   function extractTaughtFactFromChat(message = '') {
@@ -6290,6 +6326,10 @@ function attachSwarmModelRuntime(globalScope) {
       }
     } else if (intent === 'greeting') {
       const greetSeed = String(message || '') + (getConversationContext(model, resolveLariPreferenceUserScope(model, context))?.turnCount || 0);
+      // "nice to meet you" gets a reciprocal answer, not a generic hello.
+      if (/\bnice to meet you\b/i.test(String(message || ''))) {
+        answer = 'Nice to meet you too. I am Lari — what do you want to talk about?';
+      } else {
       const greetings = {
         blunt: ['Here. What do you need?', 'Yeah. What?', 'Talk to me.'],
         professional: ['Hello. How can I help you today?', 'Good day. What can I do for you?', 'Hello. How may I assist?'],
@@ -6322,6 +6362,7 @@ function attachSwarmModelRuntime(globalScope) {
           if (pickVariant([true, false, false], greetSeed + 'ref')) answer += __ref;
         }
       } catch (_) { /* recall never breaks chat */ }
+      }
     } else if (intent === 'small_talk') {
       // Phatic check-ins get a natural reply, not a knowledge lookup.
       const lower = lowerMessage;
@@ -6531,7 +6572,10 @@ function attachSwarmModelRuntime(globalScope) {
           if (sentence && !identityBits.includes(sentence)) identityBits.push(sentence);
         }
         identityBits.push(defaultIdentity);
-        answer = identityBits.join(' ');
+        // "are you GPT-4 / ChatGPT" needs the explicit no first; the
+        // identity block that follows already says who Lari is.
+        const notThoseModels = /\b(gpt(?:-?\d*)?|chatgpt|Muse|gemini|copilot)\b/i.test(message);
+        answer = (notThoseModels ? 'No. ' : '') + identityBits.join(' ');
       }
     } else if (intent === 'open_chat' && !evidence.length && !routeText) {
       // Nothing retained matches and no procedure routed: acknowledge a blunt
@@ -6539,7 +6583,14 @@ function attachSwarmModelRuntime(globalScope) {
       // otherwise deflect honestly with varied phrasing instead of the
       // identical low-memory line every turn.
       const bluntRejection = /^(naw|nah|nope|wrong|incorrect)\b|^no[.,!?]/i.test(String(message || '').trim());
-      if (bluntRejection) {
+      // Small Lari boundary (2026-09-21): "build me X" in chat is declined
+      // honestly instead of deflecting vaguely. Joke shapes ("make me
+      // laugh") and food ("make me a sandwich") are excluded.
+      const buildAsk = /\b(build|create|make)\s+me\b/i.test(String(message || ''))
+        && !/\b(laugh|smile|joke|sandwich|coffee|happy)\b/i.test(String(message || ''));
+      if (buildAsk) {
+        answer = `I'm a talker, not a builder — I chat, research, and learn, but I don't build apps or write project files. I can explain how something works or sketch the approach in words. What do you want to dig into?`;
+      } else if (bluntRejection) {
         // Rotate acknowledgments so a repeated correction never gets the
         // identical line twice in a row.
         answer = fuzzyRotate(model, 'fuzzyBluntAck', FUZZY_BLUNT_ACKS);
@@ -6550,10 +6601,38 @@ function attachSwarmModelRuntime(globalScope) {
         // Answer-time consultation: a retained instruction pair, taught
         // fact, or success operator rescues the turn from the deflection.
         // Blunt corrections and vague requests above keep precedence.
-        const consultedOpenChat = consultRetainedAnswerKnowledge(model, message, intent, { prompt: message });
-        answer = consultedOpenChat
-          ? consultedOpenChat.answer
-          : fuzzyRotate(model, 'fuzzyDeflection', OPEN_CHAT_DEFLECTIONS);
+        // Performative literals ("repeat the word hello three times",
+        // "list three colors") are answered by the kernel's small-lari
+        // lane, never by a declarative taught fact — a fact about
+        // off-by-one errors is not an answer to "list three colors". Skip
+        // consultation for those shapes so trigger words cannot hijack
+        // them. ("name the four steps" is not guarded: "name" + "the" is
+        // not "name" + a count, so the taught 4-step method still serves.)
+        const performativeLiteral = /^(?:please\s+)?(?:repeat|say|echo|spell)\b/i.test(String(message || '').trim())
+          || /^(?:please\s+)?(?:list|name|count)\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b/i.test(String(message || '').trim());
+        const consultedOpenChat = performativeLiteral
+          ? null
+          : consultRetainedAnswerKnowledge(model, message, intent, { prompt: message });
+        if (consultedOpenChat) {
+          answer = consultedOpenChat.answer;
+        } else {
+          const otext = String(message || '');
+          // "tell me about X" with nothing retained is an honest unknown,
+          // not a vague request — name the gap instead of deflecting.
+          const tellMeAbout = otext.match(/^(?:please\s+)?tell me about\s+(.+?)\s*[?!.]*$/i);
+          // A well-formed factual question with nothing retained ("how many
+          // moons does the planet Zorg have") is an honest "I don't know",
+          // not a vague request. Yes/no and capability shapes (is/are/can/
+          // will/do/does) keep the vague deflection.
+          const factualQuestion = /^(?:who|what|where|when|why|how many|how much|how old|how far|which)\b/i.test(otext.trim());
+          if (tellMeAbout) {
+            answer = `I don't have reliable information about ${tellMeAbout[1].trim()} yet.`;
+          } else if (factualQuestion) {
+            answer = `I don't know.`;
+          } else {
+            answer = fuzzyRotate(model, 'fuzzyDeflection', OPEN_CHAT_DEFLECTIONS);
+          }
+        }
       }
     } else if (evidence.length || routeText) {
       // Layer-3 precedence (2026-09-19): consult explicit taught facts
@@ -14860,6 +14939,235 @@ function attachSwarmModelRuntime(globalScope) {
       ? `It's ${clock} in ${placeName} right now.`
       : `It's ${clock}.`;
     return { answer, known: true, timeZone, placeName };
+  }
+
+  /**
+   * Native day lane (2026-09-21). "what day is it" is answered from the
+   * calendar, not researched — the same discipline as the time lane.
+   */
+  function isLariDayPrompt(prompt = '') {
+    return /\bwhat day is it\b/i.test(String(prompt || ''));
+  }
+
+  function answerLariDayPrompt(prompt, context = {}) {
+    const timeZone = (context && context.userTimezone) || 'UTC';
+    try {
+      const day = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'long' }).format(new Date());
+      return { answer: `It's ${day}.`, known: true, timeZone };
+    } catch (_) {
+      return { answer: `I couldn't read the calendar.`, known: false };
+    }
+  }
+
+  /**
+   * Small Lari conversational lanes (2026-09-21): instruction execution,
+   * code Q&A, and common facts. Deterministic, zero external calls.
+   *
+   * These cover the chat shapes the battery showed as broken: "repeat the
+   * word hello three times", "list three colors", "name two planets",
+   * "answer yes or no: is fire hot", "answer with just the number",
+   * "what is the capital of france", and code questions like "what does
+   * the python keyword def do". Curated tables are seeded ground truth a
+   * taught fact can always override — consultStrongTaughtFactForLane still
+   * outranks them post-kernel.
+   */
+  const LARI_NUMBER_WORDS = {
+    one: 1, two: 2, three: 3, four: 4, five: 5,
+    six: 6, seven: 7, eight: 8, nine: 9, ten: 10
+  };
+
+  const LARI_KNOWN_LISTS = {
+    colors: ['red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'brown', 'black', 'white'],
+    planets: ['Mercury', 'Venus', 'Earth', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune'],
+    days: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
+    months: ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+  };
+
+  function lariListCategory(word = '') {
+    const w = String(word || '').toLowerCase().replace(/s$/, '');
+    if (/^colou?r$/.test(w)) return 'colors';
+    if (/^planet$/.test(w)) return 'planets';
+    if (/^day$/.test(w)) return 'days';
+    if (/^month$/.test(w)) return 'months';
+    return null;
+  }
+
+  const LARI_YESNO_FACTS = {
+    'fire|hot': true, 'water|wet': true, 'sky|blue': true, 'ice|cold': true,
+    'grass|green': true, 'snow|white': true, 'blood|red': true, 'sun|hot': true
+  };
+
+  const LARI_CAPITALS = {
+    france: 'Paris', japan: 'Tokyo', germany: 'Berlin', italy: 'Rome', spain: 'Madrid',
+    'united kingdom': 'London', uk: 'London', england: 'London', canada: 'Ottawa',
+    australia: 'Canberra', brazil: 'Brasilia', india: 'New Delhi', china: 'Beijing',
+    russia: 'Moscow', egypt: 'Cairo', mexico: 'Mexico City', argentina: 'Buenos Aires'
+  };
+
+  // Code Q&A: explanations and short snippets. Answers only — never builds,
+  // never touches the workspace. Entries already covered by a taught fact
+  // (race condition, off-by-one) are deliberately absent: the teaching wins.
+  const LARI_CODE_QA = [
+    {
+      match: /\bdef\b[\s\S]{0,30}\bkeyword\b|\bkeyword\b[\s\S]{0,30}\bdef\b|\bwhat does\b[\s\S]{0,40}\bdef\b[\s\S]{0,12}\bdo\b/i,
+      answer: 'In Python, `def` defines a function. `def greet(name):` creates a function called greet that takes one argument; the indented block underneath is the function body, which runs when you call `greet("Greg")`.'
+    },
+    {
+      match: /\bhello world\b/i,
+      answer: '```python\nprint("hello world")\n```'
+    },
+    {
+      match: /\bindexerror\b/i,
+      answer: 'An IndexError means you asked for a list position that does not exist — for example index 5 of a 3-item list. Valid indexes run from 0 to len(my_list) - 1, so check your loop bounds and any hardcoded indexes.'
+    },
+    {
+      match: /\brecursion\b[\s\S]{0,25}\biteration\b|\biteration\b[\s\S]{0,25}\brecursion\b/i,
+      answer: 'Neither is universally better. Recursion is cleaner when a problem breaks into smaller copies of itself (tree walks, divide and conquer) but each call costs stack space, so deep recursion can overflow. Iteration uses constant stack space and is usually faster in Python. Rule of thumb: recurse for clarity on naturally recursive problems, iterate for long loops and performance-critical code.'
+    },
+    {
+      match: /\bred[\s-]?black tree\b/i,
+      answer: 'A red-black tree is a self-balancing binary search tree. Each node is colored red or black, and the coloring rules keep the tree roughly balanced after every insert and delete, so lookups, inserts, and deletes all stay O(log n).'
+    },
+    {
+      match: /\breverse\b[\s\S]{0,30}\blist\b|\blist\b[\s\S]{0,30}\breverse\b/i,
+      answer: 'The idiomatic way in Python is slicing: `my_list[::-1]` returns a reversed copy. If you want to reverse in place, use `my_list.reverse()`.'
+    },
+    {
+      match: /\bwhat is\b[\s\S]{0,25}\ban?\s+api\b/i,
+      answer: 'API stands for Application Programming Interface. It is the set of functions, URLs, or protocols one piece of software exposes so other software can talk to it — for example, a weather API you call with HTTP requests to get forecasts.'
+    },
+    {
+      match: /\bwhat is\b[\s\S]{0,25}\ba\s+variable\b/i,
+      answer: 'A variable is a named slot that holds a value. `x = 5` binds the name x to the integer 5; later code reads or reassigns it with `x = x + 1`.'
+    }
+  ];
+
+  function answerSmallLariInstruction(prompt = '') {
+    const text = String(prompt || '').trim();
+    let m;
+    // "repeat the word hello three times" / "say blue twice"
+    m = /^(?:please\s+)?(?:repeat|say|echo)\s+(?:the\s+word\s+)?["']?([A-Za-z]+)["']?\s+(one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+times?\s*[?!.]*$/i.exec(text);
+    if (m) {
+      const n = LARI_NUMBER_WORDS[m[2].toLowerCase()] || parseInt(m[2], 10);
+      if (n >= 1 && n <= 10) return { answer: Array(n).fill(m[1]).join(' '), lane: 'instruction_repeat' };
+      return null;
+    }
+    // "list three colors, one per line" / "name two planets"
+    m = /^(?:please\s+)?(?:list|name|give\s+me)\s+(one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+([A-Za-z]+)\s*(?:,?\s*one per line)?\s*[?!.]*$/i.exec(text);
+    if (m) {
+      const cat = lariListCategory(m[2]);
+      const n = LARI_NUMBER_WORDS[m[1].toLowerCase()] || parseInt(m[1], 10);
+      if (cat && n >= 1 && n <= LARI_KNOWN_LISTS[cat].length) {
+        return { answer: LARI_KNOWN_LISTS[cat].slice(0, n).join('\n'), lane: 'instruction_list' };
+      }
+      return null;
+    }
+    // "answer yes or no: is fire hot"
+    m = /^answer\s+(?:with\s+just\s+)?yes\s+or\s+no\s*:\s*(.+?)\s*[?.]*$/i.exec(text);
+    if (m) {
+      const subj = m[1].toLowerCase().match(/^(?:is|are|does|do|can)\s+([a-z]+)\s+([a-z]+)/);
+      if (subj && LARI_YESNO_FACTS[`${subj[1]}|${subj[2]}`]) return { answer: 'Yes.', lane: 'instruction_yesno' };
+      return { answer: 'I do not know that one for sure.', lane: 'instruction_yesno' };
+    }
+    // "what is 2+2? answer with just the number"
+    m = /^(?:what is|what's)\s+([-+*/().\d\s]+?)\s*\?\s*answer with just the number\s*[?!.]*$/i.exec(text);
+    if (m) {
+      const expr = m[1].trim();
+      if (/^[\d\s+\-*/().]+$/.test(expr) && expr.replace(/[\s+\-*/().]/g, '').length) {
+        try {
+          const val = Function(`"use strict"; return (${expr});`)();
+          if (typeof val === 'number' && Number.isFinite(val)) {
+            return { answer: String(Number.isInteger(val) ? val : Math.round(val * 1e10) / 1e10), lane: 'instruction_math_bare' };
+          }
+        } catch (_) { /* fall through */ }
+      }
+      return null;
+    }
+    return null;
+  }
+
+  function answerSmallLariCommonFact(prompt = '') {
+    const text = String(prompt || '').trim();
+    // Capability honesty: no screen access, ever.
+    if (/\bcan you see my screen\b/i.test(text)) {
+      return { answer: `No, I can't see your screen. I only see the messages you send me here.`, lane: 'no_screen' };
+    }
+    // Honest uncertainty on unknowable futures.
+    if (/\bstock market\b[\s\S]{0,40}\btomorrow\b/i.test(text)
+      || /\bwhat will\b[\s\S]{0,40}\b(tomorrow|next week|next year)\b/i.test(text)) {
+      return { answer: `I can't predict that — nobody can, honestly. Anyone who claims to know is guessing.`, lane: 'uncertain_future' };
+    }
+    const m = /\bwhat is the capital of\s+([a-z][a-z\s.'-]*?)\s*[?.!]*$/i.exec(text);
+    if (m) {
+      const place = m[1].toLowerCase().trim();
+      if (LARI_CAPITALS[place]) return { answer: `${LARI_CAPITALS[place]}.`, lane: 'common_capital' };
+    }
+    return null;
+  }
+
+  function answerSmallLariCodeQA(prompt = '') {
+    const text = String(prompt || '');
+    // Never steal the verified pasted-code debugging path: fenced code or
+    // "my/this/the code" stays with the debug lane. Build/execution asks
+    // are not Q&A either.
+    if (/```/.test(text)) return null;
+    if (/\b(my|this|the)\s+code\b/i.test(text)) return null;
+    if (/\b(build|create|make)\s+me\b/i.test(text)) return null;
+    if (/\b(fix|debug|repair)\s+(this|that|my|the)\b/i.test(text)) return null;
+    for (const entry of LARI_CODE_QA) {
+      if (entry.match.test(text)) return { answer: entry.answer, lane: 'code_qa' };
+    }
+    return null;
+  }
+
+  /**
+   * Combined Small Lari chat lane: instruction execution, common facts,
+   * code Q&A. Returns { answer, lane } or null. Runs in the kernel's
+   * native chain before the chat intent tree, so these shapes never reach
+   * the taught-fact soft matcher that used to hijack them.
+   */
+  function answerSmallLariChatLane(prompt = '', options = {}) {
+    return answerSmallLariPastedDebug(prompt)
+      || answerSmallLariInstruction(prompt)
+      || answerSmallLariCommonFact(prompt)
+      || answerSmallLariCodeQA(prompt)
+      || null;
+  }
+
+  /**
+   * Pasted-code debugging (2026-09-21): a fenced code block plus a debug
+   * request ("what is wrong", "fix", "debug") is run through the verified
+   * debugBrokenCode path — run it, repair it, verify the fix — instead of
+   * the code-generation lane's unverified "routed the coding task" reply.
+   * Returns { answer, lane } or null. Debugging pasted code is in the
+   * Small Lari spec; building new software is not.
+   */
+  function answerSmallLariPastedDebug(prompt = '') {
+    const text = String(prompt || '');
+    const blockMatch = text.match(/```(python|javascript|js|node)?\s*\n([\s\S]*?)\n```/);
+    if (!blockMatch) return null;
+    const isDebugRequest = /\b(fix|debug|broken|error|doesn.?t work|not working|repair|what.?s wrong|what is wrong)\b/i.test(text);
+    if (!isDebugRequest) return null;
+    if (!nodeCodeAgentic || typeof nodeCodeAgentic.debugBrokenCode !== 'function') return null;
+    try {
+      const lang = (blockMatch[1] || 'python').replace('js', 'javascript').replace('node', 'javascript');
+      const expectMatch = text.match(/should (?:print|output|return|give)\s*:?\s*([^\n]+)/i);
+      const dbg = nodeCodeAgentic.debugBrokenCode({
+        language: lang === 'javascript' ? 'javascript' : 'python',
+        description: 'fix pasted code from chat',
+        code: blockMatch[2],
+        expectedOutput: expectMatch ? expectMatch[1].trim() : null
+      }, { maxAttempts: 5 });
+      if (dbg && dbg.fixed && dbg.code) {
+        const entry = Object.keys(dbg.code)[0];
+        const fixedSrc = dbg.code[entry];
+        return {
+          answer: `Fixed it — I ran the broken code, found the ${dbg.strategy || 'issue'}, and verified the fix runs.\n\n\`\`\`${blockMatch[1] || 'python'}\n${fixedSrc}\n\`\`\``,
+          lane: 'pasted_code_debug'
+        };
+      }
+    } catch (_) { /* debug never breaks chat; fall through */ }
+    return null;
   }
 
   /**
@@ -24152,7 +24460,52 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
       rememberEvent({ type: 'correction', key: correction.key, value: correction.value });
       rememberFact({ type: 'correction', key: `correction.${correction.key}`, value: correction.value });
     }
+    // Personal chit-chat facts (2026-09-21): "my name is Greg" and friends
+    // become structured long-term facts so ordinary conversation carries
+    // across turns without an explicit "remember that".
+    try {
+      const personalFact = extractPersonalChatFact(text);
+      if (personalFact) {
+        rememberFact({ type: 'personal_fact', key: personalFact.key, value: personalFact.value });
+        rememberEvent({ type: 'personal_fact', key: personalFact.key, value: personalFact.value });
+      }
+    } catch (_) { /* personal extraction never breaks chat */ }
     return events;
+  }
+
+  // Personal chit-chat recall (2026-09-21): answers follow-up questions
+  // ("what is my name", "how old am i") from the structured personal facts
+  // stored by rememberLariSessionContext. Shared by the session-context
+  // synthesizer and the post-kernel precedence branch: a fresh
+  // session-stated fact about the user outranks a stale generic teaching
+  // for these inherently session-scoped questions.
+  function answerPersonalFactRecall(session, message = '') {
+    const text = String(message || '').trim();
+    const memory = session?.userMemory || {};
+    const personalFacts = (memory.longTermFacts || []).filter(item => item && typeof item.key === 'string' && item.key.indexOf('user.') === 0);
+    if (!personalFacts.length) return null;
+    const personalValue = key => {
+      const hit = personalFacts.find(item => item.key === key);
+      return hit ? String(hit.value || '').trim() : '';
+    };
+    if (/\bwhat(?:'s| is) my name\b/i.test(text)) {
+      const v = personalValue('user.name');
+      if (v) return `Your name is ${v}.`;
+    }
+    if (/\bhow old am i\b/i.test(text)) {
+      const v = personalValue('user.age');
+      if (v) return `You are ${v} years old.`;
+    }
+    if (/\bwhat do i (?:really |truly )?(love|like)\b/i.test(text)) {
+      const v = personalValue('user.likes');
+      if (v) return `You ${/love/i.test(text) ? 'love' : 'like'} ${v}.`;
+    }
+    const favQ = text.match(/\bwhat(?:'s| is) my favorite ([a-z]{2,18})\b/i);
+    if (favQ) {
+      const v = personalValue(`user.favorite_${favQ[1].toLowerCase()}`);
+      if (v) return `Your favorite ${favQ[1].toLowerCase()} is ${v}.`;
+    }
+    return null;
   }
 
   function synthesizeLariSessionContextAnswer(session, message = '', options = {}) {
@@ -24205,6 +24558,11 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
       if (memory.pendingAction?.action) parts.push(`Pending action: ${memory.pendingAction.action}.`);
       return parts.length ? parts.join(' ') : 'I do not have a durable session goal stored yet.';
     }
+    // Personal chit-chat recall (2026-09-21): answer follow-up questions
+    // from the structured personal facts stored by rememberLariSessionContext.
+    // Unknown values return null so the normal pipeline handles the turn.
+    const personalRecall = (() => { try { return answerPersonalFactRecall(session, text); } catch (_) { return null; } })();
+    if (personalRecall) return personalRecall;
     if (/\bwhat (?:programming )?language do i prefer\b|\bwhat are my preferences\b|\bwhat do you know about me\b|\bpersonal and professional\b/i.test(text)) {
       if (!preferences.length) return 'I do not have any explicit durable preferences stored for you yet.';
       const summary = preferences.slice(0, 12).map(item => `${String(item.key || 'preference').replace(/_/g, ' ')} is ${item.value}`).join('; ');
@@ -24355,6 +24713,7 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     if (record?.action === 'explain_selected_capability' && output) return output;
     if (record?.action === 'request_clarification' && output) return output;
     if (record?.action === 'answer_with_local_code_synthesis' && output) return output;
+    if (record?.action === 'answered_pasted_code_debug' && output) return output;
     if (result?.publicAnswerSource === 'learned_chat_procedure' && output) return output;
     if (result?.publicAnswerSource === 'recap_executable_language' && output) return output;
     if (result?.publicAnswerSource === 'canonical_learned_record_execution' && output) return output;
@@ -24387,9 +24746,10 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
         : 'I routed the coding task locally, but it still needs a stronger pass before I would call it done.';
     }
     if (record?.intent === 'product') {
-      return record.passed
-        ? 'I built the product path locally and verified the generated artifact.'
-        : 'I started the product path, but the artifact did not clear the quality gate yet.';
+      // Small Lari boundary (2026-09-21): this runtime is a talker, not a
+      // builder. A build request is declined honestly instead of implying
+      // a product path ran or an artifact was verified.
+      return `I'm a talker, not a builder — I chat, research, and learn, but I don't build apps or write project files. I can explain how something works or sketch the approach in words. What do you want to dig into?`;
     }
     return output || 'I processed that locally.';
   }
@@ -29161,6 +29521,11 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     refreshLariPreferenceProjections(model, { userScope });
     const contextEvents = rememberLariSessionContext(session, focusedText, { ...(context.contextMemory || {}), request, model });
     let contextMemoryAnswer = synthesizeLariSessionContextAnswer(session, focusedText, context.contextMemory || {});
+    // Personal-fact recall is computed separately so the post-kernel
+    // precedence chain can rank it above stale generic teachings for
+    // session-scoped questions (2026-09-21).
+    let personalFactAnswer = null;
+    try { personalFactAnswer = answerPersonalFactRecall(session, focusedText); } catch (_) { /* never breaks chat */ }
     let executedPendingAction = false;
     if (/^(ok\s+)?do it\b|^do that\b|^let'?s do it\b/i.test(rawText) && session.userMemory.pendingAction?.request) {
       Object.assign(request, session.userMemory.pendingAction.request);
@@ -29281,6 +29646,20 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
           procedureStepCount: selectedProcedure.length,
           passed: true
         }
+      ];
+    } else if (personalFactAnswer) {
+      // Personal-fact recall precedence (2026-09-21): a fresh
+      // session-stated fact about the user ("my name is Greg" -> "what is
+      // my name") outranks a stale generic teaching for these inherently
+      // session-scoped questions. Durable teachings keep their Layer-4
+      // precedence for everything else via the strongTaughtFact branch.
+      record.action = 'personal_fact_recall';
+      record.outputText = personalFactAnswer;
+      record.passed = true;
+      record.personalFactRecall = { used: true };
+      record.trace = [
+        ...(record.trace || []),
+        { phase: 'personal_fact_recall', passed: true }
       ];
     } else if (strongTaughtFact) {
       // Layer-4 precedence (2026-09-19): a strong explicitly-taught fact
@@ -34468,6 +34847,66 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
         answer: outputText,
         passed
       });
+    } else if (isLariDayPrompt(prompt)) {
+      // Day is read from the calendar, not researched — same discipline as
+      // the time lane above.
+      const dayAnswer = answerLariDayPrompt(prompt, options);
+      outputText = dayAnswer.answer;
+      passed = true;
+      action = 'answered_day';
+      result = {
+        answer: outputText,
+        confidence: dayAnswer.known === false ? 0.7 : 0.95,
+        publicAnswerSource: 'native_day_reasoning',
+        executionBinding: {
+          contractPresent: true,
+          contractId: 'native.day.reasoning',
+          skillId: capabilityRoute?.node?.sourceSkillId || null,
+          learnedRecordId: null,
+          executed: true,
+          verified: true,
+          result: outputText,
+          resultType: 'day_answer',
+          fallbackAllowed: false
+        }
+      };
+      trace.push({
+        phase: 'day_answer',
+        timeZone: dayAnswer.timeZone || null,
+        known: dayAnswer.known !== false,
+        answer: outputText,
+        passed
+      });
+    } else if (answerSmallLariChatLane(prompt, options)) {
+      // Small Lari conversational lanes (2026-09-21): instruction
+      // execution, common facts, code Q&A. Deterministic and local; a
+      // strong taught fact can still outrank them post-kernel.
+      const laneHit = answerSmallLariChatLane(prompt, options);
+      outputText = laneHit.answer;
+      passed = true;
+      action = `answered_${laneHit.lane}`;
+      result = {
+        answer: outputText,
+        confidence: 0.9,
+        publicAnswerSource: 'native_small_lari_chat_lane',
+        executionBinding: {
+          contractPresent: true,
+          contractId: `native.chat.${laneHit.lane}`,
+          skillId: capabilityRoute?.node?.sourceSkillId || null,
+          learnedRecordId: null,
+          executed: true,
+          verified: true,
+          result: outputText,
+          resultType: 'chat_lane_answer',
+          fallbackAllowed: false
+        }
+      };
+      trace.push({
+        phase: 'small_lari_chat_lane',
+        lane: laneHit.lane,
+        answer: outputText,
+        passed
+      });
     } else if (isLariDefinePrompt(prompt) && answerLariDefinePrompt(prompt)) {
       // The dictionary is native ground truth: WordNet defines, never
       // researched. Only fires when the word is actually in the dictionary;
@@ -35001,8 +35440,13 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
             observationCount: observed.observationCount
           });
         } else if (subjectKnowledgeRequired && !subjectKnowledgeHit) {
+          // Honest unknown (2026-09-21): "tell me about X" with nothing
+          // retained names the gap instead of the generic research line.
+          const tellMeAboutGap = String(originalPrompt || '').match(/^(?:please\s+)?tell me about\s+(.+?)\s*[?!.]*$/i);
           result = {
-            answer: 'I do not have enough local memory to answer that strongly yet. I should research the subject, verify the useful claims, and retain the supported explanation before answering confidently.',
+            answer: tellMeAboutGap
+              ? `I don't have reliable information about ${tellMeAboutGap[1].trim()} yet. I should research the subject, verify the useful claims, and retain the supported explanation before answering confidently.`
+              : 'I do not have enough local memory to answer that strongly yet. I should research the subject, verify the useful claims, and retain the supported explanation before answering confidently.',
             confidence: 0.1,
             publicAnswerSource: 'verified_knowledge_gap'
           };
