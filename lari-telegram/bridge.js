@@ -51,6 +51,13 @@ function createBridge(deps) {
   function getUserLari(tgUser) {
     const userId = String(tgUser.id);
     if (models.has(userId)) return models.get(userId);
+    // Capped beta: every user gets their own Lari and that costs real
+    // compute. New users past the cap get null; handlers reply accordingly.
+    const cap = config.MAX_USERS || 0;
+    if (cap > 0 && !userManager.listUsers(root).includes(userId)
+        && userManager.listUsers(root).length >= cap) {
+      return null;
+    }
     const home = userManager.getOrCreateUserHome(root, tgUser);
     const model = userManager.loadUserModel(home, config.BASE_MODEL_PATH);
     const entry = { home, model };
@@ -63,6 +70,36 @@ function createBridge(deps) {
     if (entry) {
       try { userManager.saveUserModel(entry.home, entry.model); } catch (_) {}
     }
+  }
+
+  const BETA_FULL_REPLY =
+    `Small Lari is in capped beta right now — every user gets their own Lari and that costs real compute, ` +
+    `so I'm full at the moment. Check back later.`;
+
+  const CONSENT_PROMPT =
+    `One quick thing before we talk: I'm a learning bot. Everything you teach me trains YOUR Lari ` +
+    `(your own model, nobody else's), and what I learn may be folded into future base models so everyone's Lari gets smarter.\n\n` +
+    `Reply AGREE and we'll get going.`;
+
+  function hasConsented(entry) {
+    return !!(entry && entry.home && entry.home.profile
+      && entry.home.profile.trainingConsent && entry.home.profile.trainingConsent.agreed);
+  }
+
+  function recordConsent(entry) {
+    entry.home.profile.trainingConsent = { agreed: true, ts: new Date().toISOString() };
+    userManager.saveProfile(entry.home);
+  }
+
+  // Returns a reply string when the consent flow intercepts this turn, else null (proceed to chat).
+  function consentGate(entry, text) {
+    if (hasConsented(entry)) return null;
+    const t = String(text || '').trim().toLowerCase().replace(/^[/!]/, '');
+    if (t === 'agree' || t === 'i agree' || t === 'yes' || t === 'i agree.') {
+      recordConsent(entry);
+      return `You're in. I'm ${entry.home.profile.lariName} — ask me anything, teach me things, correct me when I'm wrong. What do you want to talk about?`;
+    }
+    return CONSENT_PROMPT;
   }
 
   function recordSharedContext(entry) {
@@ -147,12 +184,18 @@ function createBridge(deps) {
 
   async function handleDirectMessage(msg) {
     const entry = getUserLari(msg.from);
+    if (!entry) return BETA_FULL_REPLY;
     const text = String(msg.text || '').trim();
     if (text === '/start') {
-      return `Hey ${msg.from.first_name || 'there'} — I'm ${entry.home.profile.lariName}, your own Lari. ` +
-        `Talk to me here any time; everything you teach me sticks with me (and only me). ` +
-        `I can also save things I build for you — just ask.`;
+      if (hasConsented(entry)) {
+        return `Hey ${msg.from.first_name || 'there'} — I'm ${entry.home.profile.lariName}, your own Lari. ` +
+          `I chat, I research things, and I remember what you teach me. Ask me anything, quiz me, correct me when I'm wrong. ` +
+          `(I can talk through code and show snippets, but I don't build software — I'm a talker, not a builder.)`;
+      }
+      return CONSENT_PROMPT;
     }
+    const gated = consentGate(entry, text);
+    if (gated) return gated;
     const reply = await chatWithLari(entry, text, { chatType: 'private' });
     return reply || '...';
   }
@@ -169,8 +212,11 @@ function createBridge(deps) {
     // Owner-only learning, mention-gated replies. Everyone hears everything;
     // your Lari only speaks (and learns) when YOU address it.
     if (!isMentioned(msg, config.BOT_USERNAME)) return null;
+    if (!entry) return BETA_FULL_REPLY;
     const cleanText = String(msg.text || '')
       .replace(new RegExp(`@${escapeRegExp(config.BOT_USERNAME)}\\b`, 'gi'), '').trim();
+    const gated = consentGate(entry, cleanText || msg.text);
+    if (gated) return gated;
     const reply = await chatWithLari(entry, cleanText || msg.text, { chatType: 'group' });
     if (!reply) return null;
     return `${entry.home.profile.lariName}: ${reply}`;

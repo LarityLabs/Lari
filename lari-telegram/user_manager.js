@@ -90,6 +90,10 @@ function saveUserModel(home, model) {
   atomicWrite(home.modelPath, model);
 }
 
+function saveProfile(home) {
+  try { fs.writeFileSync(home.profilePath, JSON.stringify(home.profile, null, 2)); } catch (_) {}
+}
+
 /**
  * Jail a requested path inside the user's workspace. Returns the absolute
  * path, or null if it escapes.
@@ -116,6 +120,7 @@ module.exports = {
   getOrCreateUserHome,
   loadUserModel,
   saveUserModel,
+  saveProfile,
   jailPath,
   listUsers
 };

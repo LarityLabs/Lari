@@ -49,5 +49,9 @@ module.exports = {
 
   // Fallback timezone for "what time is it" when a user has none set.
   // Users can get their own via their profile.json's "timezone" field.
-  DEFAULT_TIMEZONE: process.env.DEFAULT_TIMEZONE || ''
+  DEFAULT_TIMEZONE: process.env.DEFAULT_TIMEZONE || '',
+
+  // Capped beta: each Telegram user gets their own Lari (own model.json),
+  // and that costs real compute. 0 or empty = uncapped.
+  MAX_USERS: parseInt(process.env.LARI_MAX_USERS || '100', 10) || 0
 };

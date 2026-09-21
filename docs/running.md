@@ -28,6 +28,15 @@ Each friend gets their own Lari: own brain file, own workspace. Everyone hears
 the same group chat, but learning is owner-only and replies are mention-gated.
 Needs a bot token from @BotFather. Full steps: `lari-telegram/DEPLOY.md`.
 
+Two product rules live in the bridge:
+
+- **Capped beta** (`LARI_MAX_USERS`, default 100): every user gets their own
+  Lari and that costs real compute. Past the cap, new users get a "beta is
+  full" reply instead of a Lari. `0` = uncapped.
+- **Training consent**: the first `/start` asks the user to agree that their
+  conversations train their Lari. Nothing is chatted until they reply AGREE.
+  Consent is stored in their `profile.json`.
+
 ## 3. CLI adapter — one question in, JSON out
 
 For scripts and pipelines:
@@ -63,3 +72,4 @@ live one stays yours.
 | `LARI_TELEGRAM_ROOT` | Root dir for the Telegram deployment's per-user models (used by the consolidation script). |
 | `LARI_USER` / `LARI_USER_SCOPE` | User scope for the CLI adapter. |
 | `LARI_AUTONOMOUS_LEARNING=0` | Disables autonomous learning practice in the CLI adapter. |
+| `LARI_MAX_USERS` | Telegram beta cap: max per-user Laris (default 100, `0` = uncapped). |

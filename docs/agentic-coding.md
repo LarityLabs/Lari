@@ -1,62 +1,51 @@
-# Agentic coding
+# Coding: what Small Lari does and doesn't do
 
-Lari's coding ability lives in `swarm_code_agentic.js` — a separate execution
-loop from chat, and the strongest thing in the repo. The policy for everything
-it does:
+Small Lari is a chatbot — chat, research, persistent learning. On coding, the
+line is simple: **he answers coding questions, he doesn't build software.**
 
-**attempt → execute → verify → retain.**
+What that means in practice:
 
-And the rule Greg drilled into him in tutoring session 6: **never claim code
-works unless it has actually been run and checked.** The loop enforces it
-mechanically — verification isn't a promise, it's a test run.
+- **Yes:** explaining code, answering "how do I ..." questions, showing
+  snippets, debugging a code block you paste into chat (he runs it, finds the
+  issue, and only answers when the fix verifies).
+- **No:** autonomous coding-goal work, multi-file project construction,
+  background build/repair jobs, "things I build for you." The opportunistic
+  coding-goal worker that used to run after coding turns was removed from the
+  runtime in September 2026.
 
-## The five modes
+## The machinery in the repo
 
-| Mode | What it does |
-|---|---|
-| **DEBUG** | Takes broken code plus its error, fixes it, verifies the fix. Pattern-based repair first, then bounded mutation repair (≤5 attempts). |
-| **MULTI-FILE** | Tasks spanning modules and real imports — not single scripts. |
-| **COMPOSE** | Combines retained, verified solutions into bigger programs. |
-| **SELF-CURRICULUM** | Invents harder practice tasks from ones already mastered. |
-| **RESEARCH WHEN STUCK** | Hits an unknown concept, researches it, retries with the new knowledge. |
+`swarm_code_agentic.js` comes from the research lineage and implements an
+execution loop with five modes:
 
-DEBUG is the workhorse. For wrong-output or logic errors it tries **verified
-mutation repair**: small systematic mutations (off-by-one range fixes,
-constant tweaks, operator swaps), each candidate actually executed against the
-failing case. A fix counts only if the code runs and the failure is gone.
+| Mode | What it does | Used by Small Lari chat? |
+|---|---|---|
+| **DEBUG** | Broken code + error → fixed code, fix verified by execution. Pattern repair first, bounded mutation (≤5 attempts) after. | **Yes** — pasted snippets only |
+| **MULTI-FILE** | Tasks spanning modules and real imports. | No |
+| **COMPOSE** | Combines retained, verified solutions into bigger programs. | No |
+| **SELF-CURRICULUM** | Invents harder practice tasks from mastered ones. | No |
+| **RESEARCH WHEN STUCK** | Researches an unknown concept, retries with the new knowledge. | No (as a coding mode) |
 
-## What "verified" means here
+The policy the loop was built around still applies wherever it runs:
+**attempt → execute → verify → retain**, and the rule from tutoring session 6:
+**never claim code works unless it has actually been run and checked.**
 
-- Every repair is checked against assertions the loop doesn't control.
-- Test suites: **23/23** on the agentic coding battery.
-- Retained solutions carry provenance — what fixed it, what verified it.
-- The loop records failures as well as successes; the gap log is how
-  SELF-CURRICULUM picks the next practice target.
+Test suites: **23/23** on the agentic coding battery. That result is real and
+stays in the repo's history — it just describes the module, not the chatbot.
+Small Lari's verified claims are about conversation and learning, not building.
 
-This is also where the project's strongest honest claim comes from (see
-[VISION.md](../VISION.md)): given a defect class its vocabulary couldn't
-express, Lari proposed a generic substitution rule, verified it against 1317
-assertions it didn't control, retained it, and repaired defects it previously
-couldn't — 0/5 with growth disabled vs 5/5 with it enabled. Capability
-*acquired*, not selected.
+## The honest boundary (from tutoring session 6)
 
-## The honest boundary
+Greg found that tutoring installed coding *knowledge* but not coding
+*behavior*: Lari could recite the four-step debugging method perfectly yet
+dodge when asked to trace a broken loop in chat. Small Lari doesn't pretend
+otherwise. He talks about code well, fixes pasted snippets with real
+verification, and tells you plainly when something is beyond a chat answer.
 
-Here's the thing Greg found in tutoring session 6: **the execution loop is not
-wired into chat.** In chat, Lari can recite the four-step debugging method
-perfectly — reproduce, isolate, fix, verify — because Greg taught it to him.
-But show him a broken loop in chat and ask him to trace it, and he dodges,
-deflects, or emits filler. Tutoring installed coding *knowledge*; the *doing*
-lives in the agentic modules, and the chat layer can't borrow that competence
-yet.
+## "Go learn X" still works
 
-So: Lari is genuinely good at agentic coding *as a module* (23/23, real
-execution, real verification), and genuinely weak at coding *in conversation*.
-Both are true. The next build is the bridge — detecting real coding tasks in
-chat, routing them into the execution/verification machinery, and returning
-plans, artifacts, and test evidence instead of words about code. That's a build,
-not a tutoring session.
-
-Until then: if you want Lari to actually fix code, use the agentic loop
-directly. If you want him to talk about coding, chat works — just don't mistake
-the talk for the doing.
+The autonomous topic learner (`swarm_code_learn.js` — "go learn Python") is
+research machinery, not building machinery: it studies a topic, runs doc
+examples to verify them, cross-checks implementations on fresh inputs, and
+retains what verifies. That stays — research is one of the three things Small
+Lari is for.

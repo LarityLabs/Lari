@@ -30070,43 +30070,10 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
         }
       }
     } catch (_) { /* learning never breaks chat */ }
-    // Opportunistic coding-goal work: if this turn was coding-related and Lari
-    // has open coding research goals with oracles, try to close one. Bounded
-    // (single goal) and never breaks the response.
-    try {
-      const __isCodingTurn = /\b(python|javascript|node|script|function|code|program|debug|fix)\b/i.test(message || '')
-        || (response && /code/.test(String(response.intent || '')));
-      const __openGoals = (model && model.lariCodeGeneration && model.lariCodeGeneration.learningGoals || [])
-        .filter(g => g && g.status === 'open');
-      if (__isCodingTurn && __openGoals.length && nodeCodeAgentic
-        && typeof nodeCodeAgentic.workOpenCodingGoals === 'function'
-        && context.workCodingGoals !== false) {
-        const __researchApi = {
-          runAutonomousKnowledgeAcquisition: (m, q, o) => runAutonomousKnowledgeAcquisition(m, q, o),
-          planAutonomousKnowledgeAcquisition: (m, q, o) => planAutonomousKnowledgeAcquisition(m, q, o)
-        };
-        const __oracleFor = {};
-        // Oracles live on the goals recorded from task practice; chat goals
-        // without one are skipped by workOpenCodingGoals.
-        for (const g of __openGoals) {
-          if (g.expectedOutput) __oracleFor[g.taskId] = g.expectedOutput;
-        }
-        const __goalWork = nodeCodeAgentic.workOpenCodingGoals(model, __researchApi, {
-          maxGoals: 1,
-          oracleFor: __oracleFor,
-          sourceProvider: context.researchFactory
-            ? (plan) => {
-                const ro = context.researchFactory({ model, prompt: '', context, plan }) || {};
-                return typeof ro.sourceProvider === 'function' ? ro.sourceProvider(plan) : (ro.sources || []);
-              }
-            : undefined,
-          sources: (context.research && context.research.sources) || []
-        });
-        if (__goalWork && __goalWork.closed > 0 && response && typeof response === 'object') {
-          response.codingGoalsClosed = __goalWork.details.filter(d => d.closed);
-        }
-      }
-    } catch (_) { /* goal work never breaks chat */ }
+    // Small Lari does not build: no autonomous coding-goal work. He answers
+    // coding questions and debugs pasted snippets in chat, but he never
+    // runs background build/repair jobs. (The builder path lives in
+    // swarm_code_agentic.js and is intentionally not invoked here.)
     return response;
   }
 

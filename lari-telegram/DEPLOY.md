@@ -37,6 +37,7 @@ BASE_MODEL_PATH=/srv/lari/runtime/swarm-model.json
 BOT_USERNAME=yourlari_bot
 BOT_USER_ID=123456789
 GROUP_CHAT_ID=-1001234567890
+LARI_MAX_USERS=100
 ```
 
 - `BOT_USER_ID`: message **@userinfobot** to get your bot's numeric id.
@@ -61,13 +62,21 @@ journalctl -u lari-telegram -f   # watch it come alive
 
 ## How it behaves
 
+- **Consent first**: a new user's first `/start` asks them to agree that their
+  conversations train their Lari. Nothing is chatted until they reply AGREE.
+  Consent is stored in their `profile.json` (`trainingConsent`).
+- **Capped beta**: `LARI_MAX_USERS` in `.env` (default 100, `0` = uncapped).
+  Every user gets their own Lari and that costs real compute — past the cap,
+  new users get a "beta is full" reply instead of a Lari.
 - **DMs**: anyone who messages the bot gets their own Lari. First message
   creates `users/<telegram-id>/` with `model.json` + `workspace/`.
 - **Group**: every Lari hears everything (shared context), but a Lari only
   replies when its owner mentions `@yourlari_bot` (or replies to its message).
   Your Lari learns from what YOU say to it — never from other people's messages.
-- **Workspaces**: each user's Lari can save things it builds under its own
-  `workspace/`. Paths are jailed — no escaping into other users' folders.
+- **Small Lari doesn't build**: he answers coding questions and debugs pasted
+  snippets in chat, but there is no autonomous building — no coding-goal work,
+  no multi-file construction. The `workspace/` is per-user file space, paths
+  are jailed — no escaping into other users' folders.
 - **Restarts**: models auto-save after every turn; shared context replays the
   last 50 messages on boot.
 

@@ -11,11 +11,18 @@ Then read [the docs](docs/README.md) — especially [how Lari learns](docs/self-
 
 ## Status
 
-**Not ready for public beta.** The honest state of the project is tracked in the working copy;
-the strongest verified claim to date is bounded verified code-mutation search (a defect class the
-seed vocabulary could not express, repaired after growing the rule, verified against 1317 assertions
-it does not control). Chat is under active development (September 2026): open-chat routing with a
-fuzzy phatic layer (one-word changes no longer break it), a discourse miner that actually learns
+**Not ready for public beta.** This repo is **Small Lari**: a chatbot built for
+chat, research, and persistent learning — not a builder. He answers questions
+(including coding questions, with snippets), researches topics when asked
+("go learn X"), and remembers what you teach him across sessions. He does not
+build software: there is no autonomous coding-goal work, no multi-file project
+construction, no background build jobs. The agentic coding module from the
+research lineage is present in the repo but chat never invokes its builder
+path; pasted broken code can still be debugged in conversation.
+
+The honest state of the project is tracked in the working copy. Chat is under
+active development (September 2026): open-chat routing with a fuzzy phatic
+layer (one-word changes no longer break it), a discourse miner that actually learns
 from real conversation (corrections, instructional directives, and repeated successful exchanges
 induce retained operators), a nightly consolidation loop, and bounded checkpoint pruning.
 

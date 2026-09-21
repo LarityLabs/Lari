@@ -60,10 +60,21 @@ function group(userId, name, text, msgId = 1, replyTo = null) {
 
   console.log('== DMs: each user gets their own Lari ==');
   await bridge.handleUpdate(dm(111, 'Greg', '/start'));
-  check('/start replies with intro', transport.sent.length === 1 && /your own Lari/.test(transport.sent[0].text),
+  check('/start asks for training consent first', transport.sent.length === 1 && /AGREE/.test(transport.sent[0].text),
     transport.sent[0] && transport.sent[0].text.slice(0, 80));
   const gregHome = path.join(root, 'users', '111');
   check('user home created', fs.existsSync(path.join(gregHome, 'model.json')) && fs.existsSync(path.join(gregHome, 'workspace')));
+
+  transport.sent.length = 0;
+  await bridge.handleUpdate(dm(111, 'Greg', 'so what can you do'));
+  check('chat before consent is blocked by consent prompt', transport.sent.length === 1 && /AGREE/.test(transport.sent[0].text));
+
+  transport.sent.length = 0;
+  await bridge.handleUpdate(dm(111, 'Greg', 'agree'));
+  check('agree records consent and welcomes', transport.sent.length === 1 && /You're in/.test(transport.sent[0].text),
+    transport.sent[0] && transport.sent[0].text.slice(0, 80));
+  const gregProfile = JSON.parse(fs.readFileSync(path.join(gregHome, 'profile.json'), 'utf8'));
+  check('consent persisted in profile', !!(gregProfile.trainingConsent && gregProfile.trainingConsent.agreed));
 
   transport.sent.length = 0;
   await bridge.handleUpdate(dm(111, 'Greg', 'so what can you do'));
@@ -73,7 +84,10 @@ function group(userId, name, text, msgId = 1, replyTo = null) {
   check('reply is a real answer, not an echo of the input',
     dmReply !== 'so what can you do' && !/^Greg's Lari:\s*$/.test(dmReply), dmReply.slice(0, 80));
 
+  transport.sent.length = 0;
   await bridge.handleUpdate(dm(222, 'Mike', 'yo'));
+  check('second user gets consent prompt too', transport.sent.length === 1 && /AGREE/.test(transport.sent[0].text));
+  await bridge.handleUpdate(dm(222, 'Mike', 'agree'));
   check('second user gets separate home', fs.existsSync(path.join(root, 'users', '222', 'model.json')));
   const m1 = fs.readFileSync(path.join(gregHome, 'model.json'), 'utf8');
   const m2 = fs.readFileSync(path.join(root, 'users', '222', 'model.json'), 'utf8');
@@ -116,6 +130,34 @@ function group(userId, name, text, msgId = 1, replyTo = null) {
   transport.sent.length = 0;
   await bridge.handleUpdate({ message: { message_id: 9, from: { id: 111, first_name: 'Greg' }, chat: { id: -999, type: 'group' }, text: '@testlari_bot hi' } });
   check('foreign group ignored', transport.sent.length === 0);
+
+  console.log('== capped beta ==');
+  const capRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lari-tg-cap-'));
+  const capTransport = mockTransport();
+  const capTelegram = createTelegramClient({ transport: capTransport });
+  const capConfig = {
+    LARI_ROOT: capRoot,
+    BASE_MODEL_PATH: '',
+    BOT_USERNAME: 'testlari_bot',
+    BOT_USER_ID: '999',
+    GROUP_CHAT_ID: '-100',
+    MAX_USERS: 2
+  };
+  const capBridge = createBridge({ config: capConfig, runtime, telegram: capTelegram });
+  await capBridge.handleUpdate(dm(301, 'Ann', '/start'));
+  await capBridge.handleUpdate(dm(301, 'Ann', 'agree'));
+  await capBridge.handleUpdate(dm(302, 'Ben', '/start'));
+  await capBridge.handleUpdate(dm(302, 'Ben', 'agree'));
+  capTransport.sent.length = 0;
+  await capBridge.handleUpdate(dm(303, 'Cal', '/start'));
+  check('third user past cap gets beta-full reply',
+    capTransport.sent.length === 1 && /capped beta/.test(capTransport.sent[0].text),
+    capTransport.sent[0] && capTransport.sent[0].text.slice(0, 60));
+  check('capped user gets no home dir', !fs.existsSync(path.join(capRoot, 'users', '303')));
+  capTransport.sent.length = 0;
+  await capBridge.handleUpdate(dm(301, 'Ann', '/start'));
+  check('existing user still served past cap',
+    capTransport.sent.length === 1 && /your own Lari/.test(capTransport.sent[0].text));
 
   console.log(`\n${passed} passed, ${failed} failed.`);
   if (failures.length) { console.log('Failures:', failures.join(', ')); process.exit(1); }
