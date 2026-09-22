@@ -175,8 +175,30 @@ function inferResearchTopic(prompt) {
     const cleaned = aboutMatch[1].trim().replace(/^(?:the|a|an)\s+/i, '');
     if (cleaned) return { topic: cleaned, urls: [] };
   }
-  const contentWords = [...topicTokens(text)].slice(0, 6);
-  if (contentWords.length >= 2) return { topic: contentWords.join(' '), urls: [] };
+  // Question frames ("Who wrote Hamlet?", "How tall is Mount Everest?")
+  // would otherwise pollute the topic ("tall mount everest" once fetched
+  // the 1996 disaster article instead of the mountain). Strip the frame so
+  // the topic is the subject being asked about.
+  const questionStripped = text
+    .replace(/^(?:who|what|where|when|why|which)\s+(?:is|are|was|were|do|does|did|wrote|painted|discovered|invented)\s+/i, '')
+    .replace(/^how\s+(?:many|much|old|far|tall|long|deep|big|wide)\s+(?:is|are|was|were)\s+/i, '')
+    .replace(/^what\s+language\s+do\s+they\s+speak\s+in\s+/i, '')
+    .replace(/\s+born\??$/i, '');
+  const stripped = questionStripped !== text ? questionStripped : text;
+  const contentWords = [...topicTokens(stripped)].slice(0, 6);
+  // Numeric subjects ("Who wrote 1984?"): topicTokens only captures
+  // alphabetic tokens, so a stripped question left with just a number
+  // would infer an empty topic.
+  if (!contentWords.length && questionStripped !== text) {
+    const numeric = stripped.match(/\b\d[\d,.]*\b/g) || [];
+    if (numeric.length) {
+      const numTopic = numeric.slice(0, 3).join(' ');
+      // "Who wrote 1984?" is about the novel, not the year 1984.
+      if (/who\s+wrote/i.test(text)) return { topic: numTopic + ' novel', urls: [] };
+      return { topic: numTopic, urls: [] };
+    }
+  }
+  if (contentWords.length >= 1) return { topic: contentWords.join(' '), urls: [] };
   return { topic: '', urls: [] };
 }
 
