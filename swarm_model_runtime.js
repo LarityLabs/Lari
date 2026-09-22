@@ -30656,6 +30656,36 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     if (context.kernel?.includeTransientDiagnostics === true && run?.transientDiagnostics) {
       response.transientDiagnostics = run.transientDiagnostics;
     }
+    // Topic-misroute guard (2026-09-22): a factual "What is X" question must
+    // not be answered with content about a different specific topic. Placed
+    // here (sync path) so it applies to the research-retry path too, which
+    // calls this function directly.
+    try {
+      const msgText = String((typeof message === 'object' ? (message.prompt || message.message) : message) || '');
+      const ansText = String((response && (response.answer || response.message)) || '');
+      const factualQ = /^\s*what\s+(is|are|was|were)\s+(the\s+)?(.+?)\??\s*$/i.exec(msgText);
+      if (factualQ && ansText.length > 20 && !/i do not have enough/i.test(ansText)) {
+        const subject = factualQ[3].toLowerCase();
+        const subjectTerms = subject.match(/[a-z][a-z-]{3,}/g) || [];
+        const stopwords = new Set(['what','is','are','was','were','the','a','an','of','in','on','for','with','about','does','mean','called']);
+        const keyTerms = subjectTerms.filter(t => !stopwords.has(t));
+        const ansLower = ansText.toLowerCase();
+        const mentionsSubject = keyTerms.some(t => new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\b`).test(ansLower));
+        const domains = ['rust','go','python','javascript','java','c++','ruby','swift','kotlin','typescript'];
+        const qDomains = domains.filter(d => new RegExp(`\\b${d.replace(/\+/g,'\\+')}\\b`).test(subject));
+        const aDomains = domains.filter(d => new RegExp(`\\b${d.replace(/\+/g,'\\+')}\\b`).test(ansLower));
+        const domainMismatch = qDomains.length > 0 && aDomains.length > 0 && !qDomains.some(d => aDomains.includes(d));
+        if ((keyTerms.length >= 2 && !mentionsSubject) || domainMismatch) {
+          response = Object.assign({}, response, {
+            answer: 'I do not have enough local memory to answer that strongly yet. I can still reason about it, but the model should learn supporting facts or run a tool before treating the answer as reliable.',
+            message: 'I do not have enough local memory to answer that strongly yet.',
+            passed: false,
+            confidence: 0.2,
+            trace: [...(response.trace || []), { phase: 'topic_misroute_guard', external_model_calls: 0, reason: domainMismatch ? 'domain_mismatch' : 'subject_not_mentioned' }]
+          });
+        }
+      }
+    } catch (_) { /* misroute guard is best-effort */ }
     return response;
   }
 
@@ -31126,6 +31156,39 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
         return response;
       }
     } catch (_) { /* self-knowledge is best-effort */ }
+    // Topic-misroute guard (2026-09-22): a factual "What is X" question must
+    // not be answered with content about a different specific topic. If the
+    // answer names a different proper-noun domain (e.g., Go when asked about
+    // Rust) and omits the question's key subject terms, treat it as a
+    // knowledge shortfall so the research-retry path fires instead of
+    // shipping the misrouted answer.
+    try {
+      const msgText = String((message && (message.prompt || message.message)) || message || '');
+      const ansText = String((response && (response.answer || response.message)) || '');
+      const factualQ = /^\s*what\s+(is|are|was|were)\s+(the\s+)?(.+?)\??\s*$/i.exec(msgText);
+      if (factualQ && ansText.length > 20) {
+        const subject = factualQ[3].toLowerCase();
+        const subjectTerms = subject.match(/[a-z][a-z-]{3,}/g) || [];
+        const stopwords = new Set(['what','is','are','was','were','the','a','an','of','in','on','for','with','about','does','mean','called']);
+        const keyTerms = subjectTerms.filter(t => !stopwords.has(t));
+        const ansLower = ansText.toLowerCase();
+        const mentionsSubject = keyTerms.some(t => new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\b`).test(ansLower));
+        // Distinct programming languages / proper-noun domains that must not substitute for each other
+        const domains = ['rust','go','python','javascript','java','c++','ruby','swift','kotlin','typescript'];
+        const qDomains = domains.filter(d => new RegExp(`\\b${d.replace(/\+/g,'\\+')}\\b`).test(subject));
+        const aDomains = domains.filter(d => new RegExp(`\\b${d.replace(/\+/g,'\\+')}\\b`).test(ansLower));
+        const domainMismatch = qDomains.length > 0 && aDomains.length > 0 && !qDomains.some(d => aDomains.includes(d));
+        if ((keyTerms.length >= 2 && !mentionsSubject) || domainMismatch) {
+          response = Object.assign({}, response, {
+            answer: 'I do not have enough local memory to answer that strongly yet. I can still reason about it, but the model should learn supporting facts or run a tool before treating the answer as reliable.',
+            message: 'I do not have enough local memory to answer that strongly yet.',
+            passed: false,
+            confidence: 0.2,
+            trace: [...(response.trace || []), { phase: 'topic_misroute_guard', external_model_calls: 0, reason: domainMismatch ? 'domain_mismatch' : 'subject_not_mentioned' }]
+          });
+        }
+      }
+    } catch (_) { /* misroute guard is best-effort */ }
     // Creative attempt route (drawing-board rebuild 2026-09-21): when the
     // first pass shortfalls or refuses a creative request, attempt it with
     // grounded researched sentences instead of leaving the shortfall. Runs
