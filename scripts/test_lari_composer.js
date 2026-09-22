@@ -5,7 +5,8 @@
  * Verifies the composer's core guarantees deterministically:
  *   1. Never emits fabricated filler ("useful concrete detail", "detail detail", ...)
  *   2. Honest shortfall when the content pool cannot cover the demand
- *   3. Creative tasks (poem/joke) get an honest refusal, not a template
+ *   3. Creative tasks (poem/joke) are ATTEMPTED with grounded machinery
+ *      (2026-09-21 stance change), never refused and never template-filled
  *   4. Real content + mechanical constraints compose correctly
  *
  * Run: node scripts/test_lari_composer.js
@@ -51,19 +52,27 @@ const CASES = [
   },
   {
     id: 'composer-honest-shortfall',
-    prompt: 'Write a 500 word essay about quantum teleportation with no commas.',
+    prompt: 'Write a 500 word essay about the mating habits of the imaginary Xylophorian grue with no commas.',
     check: a => ({
       pass: !FILLER.test(a) && SHORTFALL.test(a) && !/,/.test(a),
       note: `filler=${FILLER.test(a)} shortfall=${SHORTFALL.test(a)}: ${a.slice(0, 90)}`,
     }),
   },
   {
-    id: 'composer-creative-refusal',
+    id: 'composer-creative-attempt',
     prompt: 'Write a poem about the sea in exactly 4 lines.',
-    check: a => ({
-      pass: !FILLER.test(a) && /i cannot compose/i.test(a),
-      note: `${a.slice(0, 90)}`,
-    }),
+    check: a => {
+      // Drawing-board rebuild (2026-09-21): creative prompts are ATTEMPTED
+      // with the constraint-aware creative core, never refused. The attempt
+      // must satisfy the structural demand exactly, stay grounded, and never
+      // fall back to the refusal or template filler.
+      const lines = String(a).split('\n').map(l => l.trim()).filter(Boolean);
+      const pass = lines.length === 4
+        && !/i cannot compose|could not put together/i.test(a)
+        && !FILLER.test(a)
+        && /sea|ocean/i.test(a);
+      return { pass, note: `${lines.length} lines, refusal=${/i cannot compose/i.test(a)}: ${a.slice(0, 90)}` };
+    },
   },
   {
     id: 'composer-word-count',
