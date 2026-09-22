@@ -154,12 +154,45 @@ async function duckDuckGoSearch(query) {
 }
 
 /**
+ * Fetch a page with Playwright (real Chromium) for JS-heavy sites.
+ * Used as fallback when plain fetch returns too little usable text.
+ * Returns extracted text or null.
+ */
+async function fetchWithPlaywright(url) {
+  let browser = null;
+  try {
+    const { chromium } = require('playwright');
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ userAgent: USER_AGENT });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: FETCH_TIMEOUT_MS });
+    // Let JS settle briefly
+    await page.waitForTimeout(1500);
+    const html = await page.content();
+    await browser.close();
+    browser = null;
+    const text = htmlToText(html);
+    return text.length >= 200 ? text : null;
+  } catch (_) {
+    if (browser) { try { await browser.close(); } catch (_) {} }
+    return null;
+  }
+}
+
+/**
  * Fetch a page and extract topic-relevant sentences.
+ * Falls back to Playwright when plain fetch yields too little.
  */
 async function fetchTopicSentences(url, topicTokens, maxSentences = 12) {
   const res = await fetchUrl(url);
-  if (!res || !res.text) return [];
-  const text = htmlToText(res.text);
+  let text = '';
+  if (res && res.text) {
+    text = htmlToText(res.text);
+  }
+  // Plain fetch yielded too little (JS-heavy site): try real browser.
+  if (text.length < 200) {
+    const pwText = await fetchWithPlaywright(url);
+    if (pwText) text = pwText;
+  }
   if (text.length < 200) return [];
   const sentences = splitSentences(text);
   const scored = [];
@@ -266,6 +299,7 @@ async function researchWebTopic(topic, prompt) {
 
 module.exports = {
   fetchUrl,
+  fetchWithPlaywright,
   htmlToText,
   splitSentences,
   duckDuckGoSearch,

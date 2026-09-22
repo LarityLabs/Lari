@@ -31064,8 +31064,68 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     return null;
   }
 
+  /**
+   * Architecture self-knowledge loader (2026-09-22). Loads the curated
+   * lari-architecture.json once; answers self-questions about how Lari
+   * works, how he learns, and what he's made of.
+   */
+  let lariArchitectureKB = null;
+  function loadLariArchitectureKB() {
+    if (lariArchitectureKB) return lariArchitectureKB;
+    try {
+      const fsMod = require('fs');
+      const pathMod = require('path');
+      const baseDir = (typeof __dirname === 'string' && __dirname) ? __dirname : process.cwd();
+      const p = pathMod.join(baseDir, 'models', 'lari', 'current', 'lari-architecture.json');
+      const raw = fsMod.readFileSync(p, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.entries)) lariArchitectureKB = parsed.entries;
+    } catch (_) { lariArchitectureKB = []; }
+    return lariArchitectureKB;
+  }
+  function answerArchitectureQuestion(message) {
+    const text = String((message && (message.prompt || message.message)) || message || '').toLowerCase().trim().replace(/[?.!]+$/, '');
+    if (!text) return null;
+    const entries = loadLariArchitectureKB();
+    if (!entries.length) return null;
+    for (const entry of entries) {
+      for (const q of (entry.questions || [])) {
+        const norm = String(q).toLowerCase().trim();
+        // Exact match or the message starts/ends with the question
+        if (text === norm || text.startsWith(norm) || text.endsWith(norm)) {
+          return entry.answer;
+        }
+        // Token-overlap fallback: all significant question tokens present
+        const qTokens = norm.split(/[^a-z]+/).filter(t => t.length >= 4);
+        if (qTokens.length >= 2 && qTokens.every(t => text.includes(t))) {
+          return entry.answer;
+        }
+      }
+    }
+    return null;
+  }
+
   async function sendMessageToLariAsyncInner(model, message = '', context = {}) {
     let response = sendMessageToLari(model, message, context);
+    // Architecture self-knowledge (2026-09-22): when Lari is asked about
+    // his own architecture, answer from the curated self-knowledge base
+    // (models/lari/current/lari-architecture.json). This runs before the
+    // creative/research paths so self-questions get a direct, accurate
+    // answer instead of a shortfall or misroute.
+    try {
+      const archAnswer = answerArchitectureQuestion(message);
+      if (archAnswer) {
+        response = Object.assign({}, response, {
+          answer: archAnswer,
+          message: archAnswer,
+          passed: true,
+          confidence: 0.95,
+          intent: 'chat',
+          trace: [...(response.trace || []), { phase: 'architecture_self_knowledge', external_model_calls: 0 }]
+        });
+        return response;
+      }
+    } catch (_) { /* self-knowledge is best-effort */ }
     // Creative attempt route (drawing-board rebuild 2026-09-21): when the
     // first pass shortfalls or refuses a creative request, attempt it with
     // grounded researched sentences instead of leaving the shortfall. Runs
