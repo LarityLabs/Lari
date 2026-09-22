@@ -16544,14 +16544,16 @@ function attachSwarmModelRuntime(globalScope) {
     if (existing) {
       const known = new Set(existing.sentences || []);
       let added = 0;
+      const newSentences = [];
       for (const sentence of cleanSentences) {
         if (!known.has(sentence)) {
-          existing.sentences.push(sentence);
+          newSentences.push(sentence);
           known.add(sentence);
           added += 1;
         }
       }
-      existing.sentences = existing.sentences.slice(0, 60);
+      // Prepend: fresh research outranks older sentences when the 60-cap trims.
+      existing.sentences = [...newSentences, ...(existing.sentences || [])].slice(0, 60);
       for (const source of (sources || [])) {
         if (!existing.sources.includes(source)) existing.sources.push(source);
       }
@@ -16647,7 +16649,9 @@ function attachSwarmModelRuntime(globalScope) {
       // then Lhotse's 8,516 m for Everest).
       [/how\s+(?:tall|high)\b/.test(q), [], -Infinity],
       // what language ... in X
-      [/what\s+language\b/.test(q), ['([A-Z][a-z]+) is the official language', '([A-Z][a-z]+)-speaking[^.]{0,80}official language', `speak ${NAME}`], -Infinity]
+      [/what\s+language\b/.test(q), ['([A-Z][a-z]+) is the official language', '([A-Z][a-z]+)-speaking[^.]{0,80}official language', `speak ${NAME}`], -Infinity],
+      // stock price: "Tesla, Inc. (TSLA) is trading at 376.815 USD."
+      [/\bstock\b/.test(q) || /\bprice\b/.test(q), ['trading at ([\\d.]+)\\s*([A-Z]{3})', 'price of [^.]{0,30}?is ([\\d.]+)'], -Infinity]
     ];
     // Score candidate matches by subject-token proximity: the 50 chars
     // before the match weigh heavily (a "born DATE" about someone else in
@@ -16741,9 +16745,43 @@ function attachSwarmModelRuntime(globalScope) {
     return null;
   }
 
-  async function lariResearchForPrompt(prompt = '') {
-    const text = String(prompt || '').trim();
+  /**
+   * Check if a topic already has stored sentences (for the retry trigger:
+   * added==0 means "already knew it", but the retry can still extract).
+   */
+  function topicHasStoredSentences(topic) {
+    const t = String(topic || '').toLowerCase().trim();
+    if (!t) return false;
+    const entry = lariResearchedKnowledge.find(e => String(e.topic || '').toLowerCase().trim() === t);
+    return !!(entry && (entry.sentences || []).length > 0);
+  }
+
+  async function lariResearchForPrompt(prompt = '') {    const text = String(prompt || '').trim();
     if (!text) return { topic: '', added: 0, sources: [] };
+    // Finance fast path: stock prices need live data, not Wikipedia.
+    // Check before the Wikipedia path so "Tesla stock price" hits Yahoo.
+    // The topic must match what the extractor will infer for the question,
+    // otherwise exact-topic matching misses the finance sentence.
+    try {
+      const web = require('./scripts/lari_web_research.js');
+      const symbol = web.detectFinanceQuery(text);
+      if (symbol) {
+        const quote = await web.yahooFinancePrice(symbol);
+        if (quote) {
+          const sentence = `${quote.name} (${quote.symbol}) is trading at ${quote.price} ${quote.currency}.`;
+          let topic = symbol.toLowerCase() + ' stock price';
+          try {
+            const rmod = require('./scripts/lari_research.js');
+            if (rmod && typeof rmod.inferResearchTopic === 'function') {
+              const inf = rmod.inferResearchTopic(text);
+              if (inf && inf.topic) topic = String(inf.topic).toLowerCase().trim();
+            }
+          } catch (_) {}
+          const added = addLariResearchedKnowledge(topic, [sentence], [`https://finance.yahoo.com/quote/${quote.symbol}`]);
+          return { topic, added, sources: [`https://finance.yahoo.com/quote/${quote.symbol}`], finance: true };
+        }
+      }
+    } catch (_) { /* finance is best-effort */ }
     let research = null;
     try {
       research = require('./scripts/lari_research.js');
@@ -16757,8 +16795,23 @@ function attachSwarmModelRuntime(globalScope) {
     if (!research || typeof research.researchPrompt !== 'function') return { topic: '', added: 0, sources: [] };
     try {
       const result = await research.researchPrompt(text);
-      const added = addLariResearchedKnowledge(result.topic, result.sentences, result.sources);
-      return { topic: result.topic || '', added, sources: result.sources || [] };
+      if (result && result.sentences && result.sentences.length > 0) {
+        const added = addLariResearchedKnowledge(result.topic, result.sentences, result.sources);
+        return { topic: result.topic || '', added, sources: result.sources || [] };
+      }
+      // Wikipedia came up empty: fall back to the general web (DuckDuckGo
+      // search + page fetch, Yahoo Finance for tickers). Same persist+retry
+      // contract, zero external model calls.
+      try {
+        const web = require('./scripts/lari_web_research.js');
+        const topic = (result && result.topic) || text.slice(0, 80);
+        const webRes = await web.researchWebTopic(topic, text);
+        if (webRes && webRes.sentences && webRes.sentences.length > 0) {
+          const added = addLariResearchedKnowledge(webRes.topic, webRes.sentences, webRes.sources);
+          return { topic: webRes.topic || '', added, sources: webRes.sources || [], web: true };
+        }
+      } catch (_) { /* web research is best-effort */ }
+      return { topic: (result && result.topic) || '', added: 0, sources: (result && result.sources) || [] };
     } catch (_) {
       return { topic: '', added: 0, sources: [] };
     }
@@ -31290,7 +31343,7 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     const composerResponseText = typeof response === 'string' ? response
       : String(response?.answer || response?.text || response?.reply || '');
     const composerKnowledgeShortfall = composerResponseText.length > 0
-      && /i do not have enough grounded local knowledge/i.test(composerResponseText);
+      && /i do not have enough (grounded local knowledge|local memory)/i.test(composerResponseText);
     // Honest don't-know on a factual question ("Who wrote Hamlet?" ->
     // "I don't know.") is the same knowledge shortfall in another surface
     // form: route it through research too. Identity/capability questions
@@ -31309,13 +31362,31 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
       && context.__lariComposerResearchAttempted !== true
       && context.autoLariComposerResearch !== false) {
       const found = await lariResearchForPrompt(message);
-      if (found && found.added > 0) {
+      // Retry if research added new sentences OR if the topic already has
+      // stored sentences (added==0 means "already knew it" — the retry can
+      // still extract the answer from the existing store).
+      if (found && (found.added > 0 || (found.topic && topicHasStoredSentences(found.topic)))) {
         const retryContext = {
           ...context,
           __lariComposerResearchAttempted: true,
           autoResearchOnUncertainty: false
         };
-        const retried = sendMessageToLari(model, message, retryContext);
+        // Try the attribute extractor first: if research found a direct
+        // answer (e.g. stock price), use it without going through the
+        // composer (which may not check the researched store).
+        let retried = null;
+        try {
+          const direct = extractResearchedAttributeAnswer(message);
+          if (direct) {
+            retried = sendMessageToLari(model, message, retryContext);
+            if (retried && typeof retried === 'object') {
+              retried.answer = direct;
+            }
+          }
+        } catch (_) { /* extractor is best-effort */ }
+        if (!retried || typeof retried !== 'object' || !retried.answer || /i do not have enough/i.test(String(retried.answer))) {
+          retried = sendMessageToLari(model, message, retryContext);
+        }
         if (retried && typeof retried === 'object') {
           retried.trace = [
             ...(retried.trace || []),
