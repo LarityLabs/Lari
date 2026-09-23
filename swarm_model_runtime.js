@@ -14875,6 +14875,93 @@ function attachSwarmModelRuntime(globalScope) {
       || (/\d/.test(raw) && /\b(?:plus|minus|times|multiplied by|divided by)\b/i.test(raw));
   }
 
+  // Native Python-semantics lane (2026-09-23): questions asking what a small
+  // Python snippet does/prints/evaluates to, natural-language descriptions
+  // of small Python programs ("a while loop starts x at 0..."), and fixed
+  // Python language facts (keywords, builtins). Answers come from the local
+  // interpreter via the existing sandbox — never guessed. Conservative by
+  // design: it only fires when the prompt names Python AND shows code, an
+  // execution-oriented verb with code-like tokens, a described program, or
+  // a which-keyword/which-function language-fact question.
+  function isLariPythonSemanticsPrompt(prompt = '') {
+    const raw = String(prompt || '');
+    if (!/\bpython\b/i.test(raw)) return false;
+    if (/```/.test(raw)) return true;
+    if (/\b(what\s+(?:does|is|will)|print|output|outputs|evaluate|traces?|run|running)\b/i.test(raw)
+      && /(^|\s)(=|while\b|for\b|if\b|print\s*\(|def\b|len\s*\(|range\s*\(|\[|\]|\+=|-=|\*\*|==|!=)/.test(raw)) return true;
+    if (/\b(while|for)\s+loop\b/i.test(raw) && /\b(what\s+is|after\s+the\s+loop|how\s+many\s+times)\b/i.test(raw)) return true;
+    if (/\bin\s+python,?\s+which\s+(?:keyword|function)\b/i.test(raw)) return true;
+    if (/\bin\s+python,?\s+what\s+is\s+the\s+(?:first|last|length)/i.test(raw)) return true;
+    return false;
+  }
+
+  // Fixed Python language facts: stable, sourced from the language
+  // definition. Deterministic table — never synthesized or guessed.
+  // Only unambiguous mappings live here; anything ambiguous falls through.
+  const LARI_PYTHON_LANGUAGE_FACTS = [
+    { test: /which keyword starts? a conditional branch/i, answer: 'if' },
+    { test: /which function returns? the length of a (?:string|str)\b/i, answer: 'len' },
+    { test: /which keyword defines? a function\b/i, answer: 'def' },
+    { test: /which keyword (?:starts?|begins?) a while loop\b/i, answer: 'while' },
+    { test: /which keyword (?:starts?|begins?) a for loop\b/i, answer: 'for' },
+    { test: /which function prints? (?:to|output)/i, answer: 'print' }
+  ];
+
+  function answerLariPythonLanguageFact(prompt = '') {
+    for (const fact of LARI_PYTHON_LANGUAGE_FACTS) {
+      if (fact.test.test(String(prompt || ''))) return fact.answer;
+    }
+    return null;
+  }
+
+  // Synthesize executable Python from a natural-language description of a
+  // small program. Template-based and conservative: returns null unless a
+  // template matches exactly. Synthesized code is always run through the
+  // same safety filter as user-supplied code.
+  function synthesizeDescribedPythonProgram(raw = '') {
+    const text = String(raw || '');
+    let m;
+    // "a python while loop starts x at 0 and adds 1 each pass while x is less than 4"
+    m = /while loop starts? ([A-Za-z_]\w*) at (-?\d+(?:\.\d+)?) and adds? (-?\d+(?:\.\d+)?) each (?:pass|iteration) while \1 is less than (-?\d+(?:\.\d+)?)/i.exec(text);
+    if (m) {
+      const v = m[1];
+      return { kind: 'described_while_loop', code: `${v} = ${m[2]}\nwhile ${v} < ${m[4]}:\n    ${v} += ${m[3]}\nprint(${v})` };
+    }
+    // "a python for loop runs i from 0 up to (but not including) 5, adding i to total starting at 0"
+    m = /for loop (?:runs?|sets?|uses?) ([A-Za-z_]\w*) from (-?\d+) up to \(but not including\) (-?\d+)(?:, adding \1 to ([A-Za-z_]\w*) starting at (-?\d+))?/i.exec(text);
+    if (m) {
+      const v = m[1];
+      const total = m[3] || 'total';
+      const start = m[4] || '0';
+      return { kind: 'described_for_loop', code: `${total} = ${start}\nfor ${v} in range(${m[2]}, ${m[3]}):\n    ${total} += ${v}\nprint(${total})` };
+    }
+    // "what is the first character of the string hello" / "first character of 'hello'"
+    m = /first character of (?:the string\s+)?["']?([A-Za-z0-9]+)["']?/i.exec(text);
+    if (m) return { kind: 'string_index', code: `print(${JSON.stringify(m[1])}[0])` };
+    // "what is the length of the string hello"
+    m = /length of (?:the string\s+)?["']?([A-Za-z0-9]+)["']?/i.exec(text);
+    if (m) return { kind: 'string_len', code: `print(len(${JSON.stringify(m[1])}))` };
+    return null;
+  }
+
+  // Safety filter for code the lane will execute. The sandbox already
+  // isolates (temp dir, hard timeout, no network), and this keeps the
+  // language surface to pure computation: no imports, no I/O, no
+  // introspection, no dunders.
+  function isPythonSemanticsCodeSafe(code = '') {
+    const c = String(code || '');
+    if (!c.trim() || c.length > 2000) return false;
+    if ((c.match(/\n/g) || []).length > 40) return false;
+    return !/\b(import|from\s+[A-Za-z_]\w*\s+import|open\s*\(|exec\s*\(|eval\s*\(|compile\s*\(|input\s*\(|breakpoint\s*\(|__\w+__|os\.|sys\.|subprocess|socket|shutil|pathlib|globals\s*\(|locals\s*\(|getattr\s*\(|setattr\s*\(|delattr\s*\(|vars\s*\(|memoryview)\b/i.test(c);
+  }
+
+  function extractPythonSemanticsCode(prompt = '') {
+    const raw = String(prompt || '');
+    const fenced = /```(?:python|py)?\s*\n?([\s\S]*?)```/i.exec(raw);
+    if (fenced && fenced[1].trim()) return { kind: 'fenced_block', code: fenced[1].trim() };
+    return synthesizeDescribedPythonProgram(raw);
+  }
+
   function isLariTimePrompt(prompt = '') {
     const text = String(prompt || '');
     if (/\bwhat time is it\b/i.test(text)) return true;
@@ -25497,6 +25584,7 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     if (result?.publicAnswerSource === 'canonical_learned_record_execution' && output) return output;
     if (result?.publicAnswerSource === 'native_instruction_constraint_compiler' && output) return output;
     if (result?.publicAnswerSource === 'native_math_reasoning' && output) return output;
+    if (result?.publicAnswerSource === 'native_python_semantics' && output) return output;
     if (/^(?:generate_local_(?:image|audio)_artifact|image_request_outside_executable_scope|audio_request_outside_executable_scope|video_generation_unavailable)$/.test(String(record?.action || '')) && output) return output;
     if (record?.intent === 'chat') {
       // Bare greetings are handled by the conversational path (tone-aware, with
@@ -36492,6 +36580,86 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
         answer: outputText,
         passed
       });
+    } else if (isLariPythonSemanticsPrompt(prompt)) {
+      // Native Python-semantics lane (2026-09-23): the answering layer was
+      // the binding constraint — curriculum U2/U3 proved studied material
+      // never reaches program-trace questions. This lane runs the actual
+      // local interpreter via the existing sandbox and answers from real
+      // stdout, never from a guess. It sits after retainedKnowledgeRoute
+      // in this chain, so a taught fact still wins (teaching-loss guard);
+      // and before the math lane, so "python while loop ..." questions do
+      // not fall into arithmetic quantity-guessing. On any failure it
+      // reports an honest gap instead of fabricating.
+      const pyFact = answerLariPythonLanguageFact(prompt);
+      const pyExtracted = pyFact ? null : extractPythonSemanticsCode(prompt);
+      const pyCode = pyFact ? null : (pyExtracted && pyExtracted.code);
+      const pyKind = pyFact ? 'language_fact' : (pyExtracted && pyExtracted.kind);
+      const pySafe = pyFact ? true : (Boolean(pyCode) && isPythonSemanticsCodeSafe(pyCode));
+      let pyValue = null;
+      let pyExecuted = false;
+      if (pyFact) {
+        pyValue = pyFact;
+      } else if (pySafe && nodeCodeSelfTeach && typeof nodeCodeSelfTeach.runCodeSandbox === 'function') {
+        try {
+          const run = nodeCodeSelfTeach.runCodeSandbox('python', pyCode, { timeoutMs: 8000 });
+          pyExecuted = true;
+          if (run && run.ok && String(run.stdout || '').trim()) {
+            pyValue = String(run.stdout).trim();
+          }
+        } catch (_) { pyExecuted = false; }
+      }
+      const pyTerse = /\b(just the number|the (?:word|character|number) only|reply with (?:the )?(?:word|character) only)\b/i.test(prompt);
+      if (pyValue !== null) {
+        outputText = pyTerse ? pyValue : `I ran it in Python. Output:\n${pyValue}`;
+        passed = true;
+        action = 'answered_python_semantics';
+        result = {
+          answer: outputText,
+          confidence: 0.95,
+          publicAnswerSource: 'native_python_semantics',
+          executionBinding: {
+            contractPresent: true,
+            contractId: 'native.python.semantics',
+            skillId: capabilityRoute?.node?.sourceSkillId || null,
+            learnedRecordId: null,
+            executed: pyFact ? false : pyExecuted,
+            verified: true,
+            result: outputText,
+            resultType: pyFact ? 'python_language_fact' : 'interpreter_output',
+            fallbackAllowed: false,
+            nativeLane: 'python_semantics',
+            verificationRule: pyFact
+              ? { source: 'python_language_definition_table' }
+              : { source: 'interpreter_stdout', requiresNonEmptyStdout: true },
+            provenance: { source: pyFact ? 'LARI_PYTHON_LANGUAGE_FACTS' : 'runCodeSandbox' }
+          }
+        };
+      } else {
+        outputText = 'I could not run that as Python — I could not extract safe, runnable code from the question. I will not guess the output.';
+        passed = false;
+        action = 'python_semantics_failed';
+        result = {
+          answer: outputText,
+          confidence: 0.1,
+          publicAnswerSource: 'native_python_semantics_gap',
+          executionBinding: {
+            contractPresent: true,
+            contractId: 'native.python.semantics',
+            skillId: capabilityRoute?.node?.sourceSkillId || null,
+            learnedRecordId: null,
+            executed: pyExecuted,
+            verified: false,
+            result: outputText,
+            resultType: 'none',
+            fallbackReason: !pyCode ? 'no_extractable_code' : (!pySafe ? 'unsafe_code_rejected' : 'execution_failed'),
+            fallbackAllowed: false,
+            nativeLane: 'python_semantics',
+            verificationRule: { source: 'interpreter_stdout', requiresNonEmptyStdout: true },
+            provenance: { source: 'runCodeSandbox' }
+          }
+        };
+      }
+      trace.push({ phase: 'python_semantics', kind: pyKind, executed: pyExecuted, verified: pyValue !== null, passed });
     } else if (isLariPracticalMathPrompt(prompt)
       || isLariExplicitArithmeticPrompt(prompt)) {
       // Arithmetic is a native Lari capability inside the shared model.  It
