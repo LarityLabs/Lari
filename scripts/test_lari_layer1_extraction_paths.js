@@ -124,14 +124,18 @@ async function main() {
     taughtFacts(guards).length === 0,
     `taught_facts: ${JSON.stringify(taughtFacts(guards).map(r => r.payload?.summary))}`);
 
-  // --- 5. non-chat lanes never extract ---
+  // --- 5. code-lane turns extract too (FIX A, 2026-09-19 session 6) ---
+  // "...repo...fix...failing test" classifies as the code lane, but the
+  // kernel-entry gate fires for mode === 'code' as well, so the teaching is
+  // STORED; the teaching turn keeps its code-lane reply. This section used
+  // to assert the pre-fix behavior (no extraction on code-lane turns);
+  // updated 2026-09-23 to the intended behavior, matching
+  // test_lari_code_lane_extraction.js and docs/self-learning.md.
   const code = {};
   await ask(code, 'remember that the repo build failed; fix the failing test');
-  // "...repo...fix...failing test" classifies as the code lane; no taught_fact
-  // may be stored for it.
   const codeFacts = taughtFacts(code);
-  check('non-chat lanes: code-lane "remember that" stores no taught_fact',
-    codeFacts.length === 0,
+  check('code-lane teaching is extracted and stored as a taught_fact',
+    codeFacts.length === 1 && /repo build failed/i.test(codeFacts[0]?.payload?.summary || ''),
     `taught_facts: ${JSON.stringify(codeFacts.map(r => r.payload?.summary))}`);
 
   console.log(`\n${passed} passed, ${failed} failed`);

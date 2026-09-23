@@ -31135,16 +31135,76 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     return null;
   }
 
+  // Retained-answer guard (2026-09-23): post-processing lanes added after
+  // the September teaching-loss fixes (architecture self-knowledge,
+  // topic-misroute guard) must not overwrite an answer the first pass
+  // already grounded in retained state or in the in-kernel identity merge.
+  // A taught fact the consultation layer selected passed the relevance bar
+  // by construction; nuking it with a canned answer or a crude keyword
+  // check re-opens the teaching-loss leak (session-5 layers 3/4, session-6
+  // R8). Never throws: on any error it returns false (no skip).
+  function firstPassAnswerIsRetained(model, response, message) {
+    try {
+      if (!response || typeof response !== 'object') return false;
+      const action = String(response.action || '');
+      if (['taught_fact_precedence', 'answer_from_retained_research',
+           'answer_with_repaired_skill', 'session_context_memory',
+           'explain_selected_capability', 'request_clarification'].includes(action)) return true;
+      const trace = Array.isArray(response.trace) ? response.trace : [];
+      if (trace.some(t => t && (t.phase === 'taught_fact_precedence'
+          || t.phase === 'retained_knowledge_precedence'
+          || t.phase === 'session_context_memory'
+          || t.phase === 'autonomous_uncertainty_research'))) return true;
+      if (response.publicAnswerSource === 'verified_retained_knowledge') return true;
+      // The self_identity intent already ran the in-kernel merge (retained
+      // identity knowledge + he/him/Larry + acronym); the canned KB answer
+      // must not displace it.
+      try {
+        const msgText = String((message && (message.prompt || message.message)) || message || '');
+        if (typeof classifyChatIntent === 'function' && classifyChatIntent(msgText) === 'self_identity') return true;
+      } catch (_) { /* intent check is best-effort */ }
+      // In-kernel consultation serves the fact summary as the answer text
+      // without a distinctive action: match the answer against retained
+      // taught facts and instruction-pair responses.
+      const ansText = String(response.answer || response.message || '').trim();
+      if (!ansText) return false;
+      const normAns = ansText.toLowerCase();
+      const records = model?.lariLearnedRecords?.records || [];
+      for (const record of records) {
+        if (!record || record.status !== 'active') continue;
+        const payload = record.payload || {};
+        if (payload.kind !== 'taught_fact' || !payload.summary) continue;
+        const norm = String(payload.summary).trim().toLowerCase();
+        if (norm.length >= 12 && (normAns === norm || normAns.includes(norm))) return true;
+      }
+      const minerState = model?.lariDiscourseMiner || {};
+      const pairs = Array.isArray(minerState.pairs) ? minerState.pairs : [];
+      for (const pair of pairs) {
+        const cands = [pair?.correctedAnswer, pair?.answer].filter(Boolean).map(String);
+        for (const cand of cands) {
+          const norm = cand.trim().toLowerCase();
+          if (norm.length >= 4 && (normAns === norm || normAns.includes(norm))) return true;
+        }
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   async function sendMessageToLariAsyncInner(model, message = '', context = {}) {
     let response = sendMessageToLari(model, message, context);
     // Architecture self-knowledge (2026-09-22): when Lari is asked about
     // his own architecture, answer from the curated self-knowledge base
     // (models/lari/current/lari-architecture.json). This runs before the
     // creative/research paths so self-questions get a direct, accurate
-    // answer instead of a shortfall or misroute.
+    // answer instead of a shortfall or misroute. It must NOT overwrite an
+    // answer the first pass already grounded in retained state: a later
+    // lane silently dropping a teaching is the teaching-loss pattern
+    // (2026-09-23 guard).
     try {
       const archAnswer = answerArchitectureQuestion(message);
-      if (archAnswer) {
+      if (archAnswer && !firstPassAnswerIsRetained(model, response, message)) {
         response = Object.assign({}, response, {
           answer: archAnswer,
           message: archAnswer,
@@ -31161,12 +31221,16 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
     // answer names a different proper-noun domain (e.g., Go when asked about
     // Rust) and omits the question's key subject terms, treat it as a
     // knowledge shortfall so the research-retry path fires instead of
-    // shipping the misrouted answer.
+    // shipping the misrouted answer. Retained-knowledge guard (2026-09-23):
+    // a taught fact the consultation layer selected passed the relevance
+    // bar by construction — the crude keyword check must not nuke it
+    // (session-6 R8: paraphrased facts share no tokens with the question
+    // by design; the guard mistook that for a misroute).
     try {
       const msgText = String((message && (message.prompt || message.message)) || message || '');
       const ansText = String((response && (response.answer || response.message)) || '');
       const factualQ = /^\s*what\s+(is|are|was|were)\s+(the\s+)?(.+?)\??\s*$/i.exec(msgText);
-      if (factualQ && ansText.length > 20) {
+      if (factualQ && ansText.length > 20 && !firstPassAnswerIsRetained(model, response, msgText)) {
         const subject = factualQ[3].toLowerCase();
         const subjectTerms = subject.match(/[a-z][a-z-]{3,}/g) || [];
         const stopwords = new Set(['what','is','are','was','were','the','a','an','of','in','on','for','with','about','does','mean','called']);
