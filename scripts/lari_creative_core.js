@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Lari creative core (drawing-board rebuild, 2026-09-21).
+ * Lari creative core (drawing-board rebuild, 2026-09-21; fiction mode added
+ * 2026-09-23 per Greg: Lari must not refuse creative writing).
  *
  * Replaces the reflex creative refusal with constraint-aware attempts.
  * Pipeline (all deterministic, zero external model calls, no network):
@@ -13,24 +14,30 @@
  *      (exact lines/paragraphs/sentences) are parsed FIRST into a plan, with
  *      form defaults only filling gaps. Beats (open/turn/land) are planned
  *      as data (indices into the grounded pool), not generated text.
- *   3. FILL: the structure is filled from grounded sentences only (researched
- *      knowledge / composer pool passed in by the caller). One sentence per
- *      line for line forms; speaker labels for dialogue; a "Dear X," frame
- *      for letters; a topic header + grounded sentences for slogan/ad.
- *      Structural demand beyond the pool -> null (honest shortfall), never
- *      cycled padding, never synthesized sentences.
+ *   3. FILL: the structure is filled from grounded sentences first
+ *      (researched knowledge / composer pool passed in by the caller).
+ *      FICTION MODE (fiction: true, or forced after a grounded attempt
+ *      failed): when grounded sentences are thin, the pool is built from
+ *      WordNet glosses of lowercase common-noun topic tokens (capitalized
+ *      names are never glossed, so a fictional Sarah gets no dictionary
+ *      identity) plus deterministic template-composed sentences seeded by a
+ *      hash of the prompt. No Math.random anywhere. Fiction never asserts
+ *      real-world claims as fact; it invents openly.
  *   4. REPAIR + VERIFY: scripts/lari_constraint_repair.js fixes surface
  *      constraints (case, commas, wrapping, affixes, word/sentence counts);
  *      structural constraints (lines/paragraphs/sentences) are re-verified
  *      after repair and must hold exactly, else null.
  *
  * Honesty rules:
- *   - Every content sentence is a verbatim grounded sentence. Structural
- *     framing (speaker labels, "Dear X,", a topic header) makes no factual
- *     claim. Nothing is synthesized, woven, or transformed.
- *   - No fake feelings, no invented facts, no em dashes in user-facing text.
- *   - Impossible requests (creative form that must also be valid code) are
- *     reported as { impossible: true } so the caller can refuse honestly.
+ *   - Grounded mode: every content sentence is a verbatim grounded sentence.
+ *     Structural framing (speaker labels, "Dear X,", a topic header) makes no
+ *     factual claim. Nothing is synthesized, woven, or transformed.
+ *   - Fiction mode: the output is openly invented; it must not present
+ *     invented events about real people/places as fact.
+ *   - No fake feelings, no em dashes in user-facing text.
+ *   - Impossible requests (creative form that must also be valid code): in
+ *     fiction mode the creative form is attempted genuinely and the
+ *     unsatisfiable code demand is dropped, never presented as executable.
  *   - "No styling" stays valid: form 'none' produces direct plain prose.
  *
  * This module does NOT use the fractal composer, the voice profile, or any
@@ -69,10 +76,10 @@ const FORM_PATTERNS = [
   { form: 'riddle', re: /\briddles?\b/i },
   { form: 'speech', re: /\bspeech(es)?\b/i },
   { form: 'slogan', re: /\bslogans?\b|\btaglines?\b|\bcatchphrases?\b|\bmottos?\b/i },
-  { form: 'ad', re: /\bad\s+(copy|vertisements?|s)?\b|\bcommercials?\b|\bpromo\b/i }
+  { form: 'ad', re: /\badvertisements?\b|\bad\s+(copy|vertisements?|s)?\b|\bcommercials?\b|\bpromo\b/i }
 ];
 
-const CREATIVE_MARKERS = /\bsomething\s+creative\b|\bcreative\s+(piece|writing)\b|\bmake\s+(me\s+)?something\s+(up|creative)\b|\bcome\s+up\s+with\s+(a|an|some|something)\b|\binvent\s+(a|an|me)\b|\bimaginative\b/i;
+const CREATIVE_MARKERS = /\bsomething\s+creative\b|\bcreative\s+(piece|writing)\b|\bmake\s+(me\s+)?something\s+(up|creative)\b|\bcome\s+up\s+with\s+(a|an|some|something)\b|\binvent\s+(a|an|me)\b|\bimaginative\b|\bpretend\b|\broleplay\b|\brole\s+play\b|\bin\s+character\b/i;
 // "letter(s)" as a CHARACTER constraint ("lowercase letters", "the letter t")
 // is not a creative request. This guard keeps detectCreativeForm from
 // hijacking vocabulary/character prompts into letter-writing attempts.
@@ -415,17 +422,260 @@ function sentencesForTopic(topic, storePath) {
   return out;
 }
 
+// ------------------------------------------------------- fiction (2026-09-23)
+// Greg directive: no creative refusals, ever. When grounded sentences are
+// thin, FICTION mode composes freely instead of refusing: dictionary glosses
+// (true by definition) plus deterministic imaginative templates (clearly
+// fictional narrative). Fiction never asserts real-world facts — the creative
+// form itself (poem, story, ...) frames the output as invention — and it
+// never fakes feelings or uses em dashes. Deterministic: seeded by
+// FNV-1a(topic|form|prompt-length); no Math.random anywhere.
+
+function fnv1a32(str) {
+  let h = 0x811c9dc5;
+  const s = String(str || '');
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h >>> 0;
+}
+function fictionRng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const FICTION_NOUNS = ('road night wind light shadow morning journey home river mountain ocean ' +
+  'forest meadow dawn dusk rain snow star moon sun cloud thunder silence echo dream memory hand ' +
+  'door window bridge tower garden field valley hill stone fire ice song dance whisper harbor ' +
+  'lantern bell drum flute candle mirror map compass anchor feather leaf root thorn blossom').split(' ');
+const FICTION_VERBS = ('wait wander drift fall rise sing sleep wake run walk turn return remember ' +
+  'forget hold release gather scatter kindle follow lead carry lift bend mend open close cross ' +
+  'climb whisper echo linger vanish tremble glow fade').split(' ');
+const FICTION_ADJS = ('soft still old new cold warm dark bright quiet gentle wild calm deep high ' +
+  'low long vast narrow empty heavy slow swift patient restless lonely tender fierce pale golden ' +
+  'silver misty solemn distant ragged').split(' ');
+const FICTION_ADVS = ('softly slowly quietly patiently endlessly gently bravely alone together ' +
+  'onward upward homeward').split(' ');
+
+// Crude singular/plural for verb agreement: a topic ending in s (not ss/us/is)
+// reads plural. Heuristic, fiction-only.
+function fictionPlural(topic) {
+  const w = String(topic || '').trim().toLowerCase().split(/\s+/).pop() || '';
+  if (!w || /(ss|us|is|news|glass)$/.test(w)) return false;
+  return /s$/.test(w);
+}
+// Third-person singular conjugation for the template verbs.
+function agreeV(verb, plural) {
+  if (plural) return verb;
+  if (/[^aeiou]y$/.test(verb)) return verb.slice(0, -1) + 'ies';
+  if (/(s|sh|ch|x|z)$/.test(verb)) return verb + 'es';
+  return verb + 's';
+}
+const cap1 = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+
+// Every template keeps verb agreement on bank nouns (always singular) or uses
+// agreeV(topic) for the topic slot — never produces "the classes waits".
+function fictionSentence(rng, topic) {
+  // Strip relative clauses ("a woman named Sarah who..." -> "a woman named Sarah")
+  // so the topic slots cleanly into templates.
+  const T = (topic || 'the world').replace(/\s+\b(who|which|that)\b.*$/, '').trim() || 'the world';
+  // Subject form: no doubled article ("The the world") and no article before
+  // a name-like topic ("The Harry pet").
+  const subjT = /^[A-Z]/.test(T) ? T : 'The ' + T.replace(/^(the|a|an)\s+/i, '');
+  const pl = fictionPlural(T);
+  const noun = () => FICTION_NOUNS[Math.floor(rng() * FICTION_NOUNS.length)];
+  const noun2 = () => { let w = noun(); let g = 0; while (w === lastNoun && g++ < 8) w = noun(); lastNoun = w; return w; };
+  let lastNoun = '';
+  const verb = () => FICTION_VERBS[Math.floor(rng() * FICTION_VERBS.length)];
+  const adj = () => FICTION_ADJS[Math.floor(rng() * FICTION_ADJS.length)];
+  const adv = () => FICTION_ADVS[Math.floor(rng() * FICTION_ADVS.length)];
+  const templates = [
+    () => `The ${adj()} ${noun()} ${agreeV(verb(), false)} for ${T}.`,
+    () => `${cap1(adj())} ${noun()} falls on ${T}.`,
+    () => `Through the ${adj()} ${noun()}, ${T} ${agreeV(verb(), pl)} ${adv()}.`,
+    () => `The ${noun()} of ${T} ${agreeV(verb(), false)} in the ${noun2()}.`,
+    () => `No ${noun()} can hold ${T} for long.`,
+    () => `When the ${noun()} ${agreeV(verb(), false)}, ${T} ${agreeV(verb(), pl)} ${adv()}.`,
+    () => `${cap1(T)} ${agreeV(verb(), pl)} where the ${adj()} ${noun()} ${agreeV(verb(), false)}.`,
+    () => `Under ${adj()} skies, the ${noun()} dreams of ${T}.`,
+    () => `${cap1(noun())} and ${noun2()} follow ${T} home.`,
+    () => `${subjT} ${agreeV(verb(), pl)} through the ${adj()} ${noun()}.`,
+    () => `In the ${noun()}, ${T} ${agreeV(verb(), pl)} ${adv()}.`,
+    () => `For ${T}, the ${noun()} ${agreeV(verb(), false)} ${adv()}.`,
+  ];
+  return templates[Math.floor(rng() * templates.length)]();
+}
+
+// How many fiction sentences the prompt's structural/word demands need.
+function fictionSentenceDemand(prompt, form) {
+  const t = String(prompt || '');
+  let n = 12;
+  const plan = parseStructuralPlan(t, form);
+  if (plan.explicit.lines) n = Math.max(n, plan.targetLines);
+  if (plan.explicit.paragraphs) n = Math.max(n, plan.targetParagraphs * 3);
+  if (plan.explicit.sentences) n = Math.max(n, plan.targetSentences);
+  if (['haiku', 'limerick', 'sonnet', 'riddle'].includes(form)) n = Math.max(n, plan.targetLines || 0);
+  const wm = t.match(/(\d+)\s*\+\s*words?|at least (\d+) words?/i);
+  if (wm) n = Math.max(n, Math.ceil(parseInt(wm[1] || wm[2], 10) / 6));
+  const sm = t.match(/(\d+)\s+sections?/i);
+  if (sm) n = Math.max(n, parseInt(sm[1], 10) * 5);
+  return Math.min(n, 60);
+}
+
+// Scale a structural plan to word-count demands in fiction mode (a "200+ word
+// poem" needs ~34 lines, not the 8-line soft default).
+function scaleFictionPlan(plan, prompt) {
+  const p = Object.assign({}, plan, { explicit: Object.assign({}, plan.explicit) });
+  const wm = String(prompt || '').match(/(\d+)\s*\+\s*words?|at least (\d+) words?/i);
+  const minWords = wm ? parseInt(wm[1] || wm[2], 10) : 0;
+  if (minWords > 0 && p.unit === 'lines' && !p.explicit.lines) {
+    p.targetLines = Math.max(p.targetLines || 0, Math.ceil(minWords / 6));
+  }
+  if (minWords > 0 && p.unit === 'paragraphs' && !p.explicit.sentences) {
+    p.targetSentences = Math.max(p.targetSentences || 0, Math.ceil(minWords / 10));
+  }
+  return p;
+}
+
+// Fiction topic: the creative ask lives in the prompt's first sentence;
+// later sentences are mechanical constraints ("4 sections", "at least 5
+// sentences", "use markdown"). Strip instruction scaffolding that the
+// general extractor keeps, plus named-person frames and relative clauses.
+const FICTION_TOPIC_DROP = new Set(('least most more less fewest many much such own very ' +
+  'short long funny silly markdown headers header sections section italicize italics highlight ' +
+  'formatting divider response answer').split(' '));
+function fictionTopic(prompt, form, fallbackTopic) {
+  const clean = t => String(t || '')
+    .replace(/\b(markdown|headers?|sections?|italicize|italics?|highlights?|formatting|dividers?)\b/gi, ' ')
+    .replace(/\b(man|woman|boy|girl|person|child)\s+named\b/gi, ' ')
+    .replace(/\s+\b(who|which|that)\b.*$/, '')
+    .split(/\s+/).filter(w => w.length >= 3 && !STOPWORDS.has(w.toLowerCase()) && !FICTION_TOPIC_DROP.has(w.toLowerCase())
+      && !/(ally|ably|ibly|fully|lessly|ously|ively)$/.test(w))
+    .join(' ').replace(/\s+/g, ' ').trim();
+  const first = String(prompt || '').split(/(?<=[.?!])\s+/)[0] || '';
+  // Prefer the "about X" phrase, cut at relative pronouns: the topic is the
+  // thing itself ("zibberwort"), not its clause. (The general extractor drops
+  // the pronoun but keeps the clause, which poisons every template.)
+  // Without "about", the subject is usually the last noun phrase
+  // ("a new line of shoes" -> "shoes").
+  let t = '';
+  const aboutM = first.match(/\babout\b\s+([^.,;!?]+)/i);
+  if (aboutM) {
+    t = aboutM[1].replace(/\s+\b(who|which|that)\b.*$/i, '');
+  } else {
+    const lastOf = first.match(/.*\bof\b\s+([^.,;!?]+)/i);
+    t = lastOf
+      ? lastOf[1].replace(/\s+\b(who|which|that)\b.*$/i, '')
+      : extractCreativeTopic(first, form);
+  }
+  t = clean(t);
+  if (!t) t = clean(fallbackTopic);
+  const words = t.split(' ').filter(Boolean);
+  if (words.length > 5) t = words.slice(-5).join(' ');
+  return t || 'the world';
+}
+
+// Build the fiction pool: WordNet glosses for lowercase (common-noun) topic
+// tokens only — capitalized tokens are treated as names and never get
+// dictionary glosses (avoids attaching "Sarah (Old Testament)..." to a
+// fictional Sarah) — plus deterministic imaginative sentences.
+function fictionPoolForTopic(topic, form, prompt) {
+  const pool = [];
+  const seen = new Set();
+  const push = s => {
+    const clean = String(s || '').replace(/\s+/g, ' ').trim();
+    const key = clean.toLowerCase();
+    if (clean.length >= 25 && clean.length <= 500 && !seen.has(key) && !FAKE_FEELING_RE.test(clean)) {
+      seen.add(key);
+      pool.push(clean);
+    }
+  };
+  const escRe = w => String(w || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const stripQuotes = g => String(g || '').replace(/\s*"[^"]*"\s*/g, ' ').replace(/\s+/g, ' ').trim();
+  try {
+    const wn = require(path.join(__dirname, '..', 'swarm_wordnet_capability.js'));
+    if (wn && typeof wn.define === 'function') {
+      for (const tok of [...contentTokens(topic)].slice(0, 4)) {
+        // lowercase-in-prompt check: skip names ("Sarah", "Harry"); skip
+        // verb-form tokens ("missing") and non-noun first senses.
+        if (!new RegExp(`\\b${escRe(tok)}\\b`).test(String(prompt || ''))) continue;
+        if (/(ing|ed)$/.test(tok)) continue;
+        let defs = [];
+        try { defs = wn.define(tok) || []; } catch (_) {}
+        if (!defs.length || defs[0].pos !== 'noun') continue;
+        for (const d of defs.slice(0, 1)) {
+          const gloss = stripQuotes(d.gloss).replace(/;.*$/, '').trim();
+          if (gloss.length < 10 || /^(not|no|never)\b/i.test(gloss)) continue;
+          const titled = tok.charAt(0).toUpperCase() + tok.slice(1);
+          const sent = /^(a|an|the)\b/i.test(gloss)
+            ? `${titled} is ${gloss}.`
+            : `${titled} is ${/^[aeiou]/i.test(gloss) ? 'an' : 'a'} ${gloss}.`;
+          push(sent);
+        }
+        if (pool.length >= 6) break;
+      }
+    }
+  } catch (_) { /* WordNet is optional */ }
+  const need = fictionSentenceDemand(prompt, form);
+  const rng = fictionRng(fnv1a32(`${topic}|${form}|${String(prompt || '').length}`));
+  let guard = 0;
+  while (pool.length < need && guard++ < need * 6) push(fictionSentence(rng, topic));
+  return pool;
+}
+
+// Sectioned fiction output ("4 sections marked with markdown headers").
+// Headers count as lines so the structural check holds. When the prompt
+// demands italics, each content line is wrapped in single asterisks. When
+// the prompt names the marker ("marked with SECTION X"), that label is used
+// for the headers instead of markdown ## headers.
+function fillFictionSections(pool, topic, prompt) {
+  const m = String(prompt || '').match(/(\d+)\s+sections?/i);
+  const count = Math.min(Math.max(parseInt(m ? m[1] : 0, 10) || 2, 1), 8);
+  const wantItalics = /italici/i.test(String(prompt || ''));
+  const sectionLabel = /SECTION\s+X/i.test(String(prompt || ''));
+  const per = 4;
+  const parts = [];
+  let idx = 0;
+  for (let s = 1; s <= count; s++) {
+    const lines = [];
+    for (let k = 0; k < per && idx < pool.length; k++, idx++) {
+      const line = pool[idx];
+      lines.push(wantItalics ? `*${line}*` : line);
+    }
+    const header = sectionLabel ? `SECTION ${s}` : `## ${titleCaseTopic(topic)}, Part ${s}`;
+    parts.push(header + '\n' + lines.join('\n'));
+  }
+  const totalLines = parts.reduce((n, p) => n + p.split('\n').filter(l => l.trim()).length, 0);
+  return { text: parts.join('\n\n'), used: { lines: totalLines, paragraphs: 0, sentences: 0 } };
+}
+
 // ---------------------------------------------------------------- attempt
 
-function attemptCreative({ prompt, sentences = [], storePath } = {}) {
+function attemptCreative({ prompt, sentences = [], storePath, fiction = false, forceFiction = false } = {}) {
   const detected = detectCreativeForm(prompt);
   if (!detected) return null;
-  if (detected.impossible) return { impossible: true, form: detected.form, topic: '', text: '' };
+  // Fiction mode: attempt the creative form even when it is paired with a
+  // contradictory code demand — the invention is the point, the code demand
+  // cannot be satisfied and is dropped rather than refused.
+  if (detected.impossible && !fiction) return { impossible: true, form: detected.form, topic: '', text: '' };
   const form = detected.form;
-  const topic = extractCreativeTopic(prompt, form);
+  let topic = extractCreativeTopic(prompt, form);
 
   let pool = (sentences || []).map(s => String(s || '').replace(/\s+/g, ' ').trim()).filter(s => s.length >= 20);
   if (!pool.length && storePath !== false) pool = sentencesForTopic(topic, storePath);
+
+  // Fiction fallback (Greg directive 2026-09-23: no creative refusals): when
+  // grounded sentences are thin — or the caller forces it after a grounded
+  // attempt already failed — compose freely from the fiction pool.
+  const fictionMode = fiction && (forceFiction || pool.length < 2);
+  if (fictionMode) {
+    topic = fictionTopic(prompt, form, topic);
+    pool = fictionPoolForTopic(topic, form, prompt);
+  }
+  if (pool.length < 2) return null;
 
   // Thin-pool top-up: when the pool has genuine topical grounding but too few
   // sentences for a real attempt (soft-default story/speech want 3+), expand
@@ -494,8 +744,48 @@ function attemptCreative({ prompt, sentences = [], storePath } = {}) {
   }
   if (pool.length < 2) return null;
 
-  const plan = parseStructuralPlan(prompt, form);
-  const filled = fillCreative(plan, pool, topic, prompt);
+  let plan = parseStructuralPlan(prompt, form);
+  // Fiction mode: scale the plan to word-count demands and serve sectioned
+  // prompts directly (fillCreative treats sections as unsupported).
+  if (fictionMode) plan = scaleFictionPlan(plan, prompt);
+  // "N sections" is document structure only when the prompt says how the
+  // sections are marked ("marked with SECTION X", "markdown headers").
+  // Otherwise ("highlight 6 sections") it means highlight spans: fall back
+  // to the form's own structural default. ("markdown" alone must not count
+  // as a section marker.)
+  const structuralSections = fictionMode && plan.unsupportedSections &&
+    /marked with|mark the|headers?|divid|separat|beginning/i.test(prompt);
+  if (fictionMode && plan.unsupportedSections && !structuralSections) {
+    plan = Object.assign({}, plan, { unsupportedSections: false });
+    plan = scaleFictionPlan(plan, prompt);
+  }
+  let filled = null;
+  if (structuralSections) {
+    filled = fillFictionSections(pool, topic, prompt);
+  } else {
+    filled = fillCreative(plan, pool, topic, prompt);
+  }
+  // Highlight/italic/bold span demands ("highlight 6 sections", "italicize
+  // at least 2 sections"): wrap each content line in single asterisks when
+  // the output is not already sectioned. Line counts are unchanged.
+  if (filled && fictionMode && !structuralSections && /highlight|italici|\bbold\b/i.test(prompt)) {
+    filled = {
+      text: filled.text.split('\n').map(l => {
+        const t = l.trim();
+        if (!t || /^\*.*\*$/.test(t) || /^#{1,6}\s/.test(t)) return l;
+        return `*${t}*`;
+      }).join('\n'),
+      used: filled.used
+    };
+  }
+  // Totality: fiction mode always returns text when a form was detected.
+  // If the structural fill somehow failed, join fiction sentences directly.
+  if (!filled && fictionMode) {
+    const n = Math.min(pool.length, Math.max(4, fictionSentenceDemand(prompt, form)));
+    const body = pool.slice(0, n);
+    const text0 = plan.unit === 'lines' ? body.join('\n') : toParagraphs(body, 3).join('\n\n');
+    filled = { text: text0, used: { lines: 0, paragraphs: 0, sentences: 0 } };
+  }
   if (!filled) return null;
   const raw = filled.text;
   const used = filled.used;
@@ -512,6 +802,17 @@ function attemptCreative({ prompt, sentences = [], storePath } = {}) {
   if (r0 < r1 || (r0 === r1 && s0 < s1)) text = raw;
   if (structuralViolations(text, used) > 0) return null;
   if (FAKE_FEELING_RE.test(text)) return null;
+  // "Mention the name X only once": keep the first occurrence, replace later
+  // ones with a pronoun. Fiction-mode only; deterministic.
+  if (fictionMode) {
+    const onceM = String(prompt || '').match(/mention(?: the name)? (\w+) only once/i);
+    if (onceM) {
+      const nm = onceM[1];
+      const nmRe = new RegExp(`\\b${nm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+      let seenOnce = false;
+      text = text.replace(nmRe, mt => (seenOnce ? 'they' : (seenOnce = true, mt)));
+    }
+  }
   text = text.replace(/\u2014/g, ',').replace(/ {2,}/g, ' ').trim();
   if (!text) return null;
 
@@ -525,6 +826,7 @@ function attemptCreative({ prompt, sentences = [], storePath } = {}) {
       usedParagraphs: used.paragraphs || null,
       usedSentences: used.sentences || null,
       poolSize: pool.length,
+      fictionMode: !!fictionMode,
       structuralViolations: structuralViolations(text, used),
       surfaceViolations: surfaceViolations(text, prompt),
       repaired: text !== raw
@@ -543,6 +845,10 @@ module.exports = {
   countLines,
   countParagraphs,
   countSentences,
+  fictionPoolForTopic,
+  fictionTopic,
+  scaleFictionPlan,
+  fictionSentenceDemand,
   FORM_PATTERNS
 };
 

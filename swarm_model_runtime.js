@@ -17146,14 +17146,11 @@ function attachSwarmModelRuntime(globalScope) {
 
   function shapeLariComposerShortfall(prompt = '', plan = {}, pool = [], demand = 0, mode = '') {
     const topic = plan.topicPhrase || 'this topic';
-    let text;
-    if (mode === 'creative') {
-      const kind = (String(prompt).match(/\b(poems?|limericks?|sonnets?|songs?(\s+lyrics)?|jokes?|letters?)\b/i) || [])[1] || 'that';
-      text = `I cannot compose ${kind}; I am a deterministic system with no generative language model, so I will not fake one.`;
-    } else {
-      const requirement = demand > 0 ? 'to meet that requirement' : 'to do that well';
-      text = `I do not have enough grounded local knowledge of ${topic} ${requirement}, so I will not pad this with filler.`;
-    }
+    // No creative refusal text lives here anymore (Greg directive
+    // 2026-09-23): creative requests get a genuine fiction attempt instead.
+    // The honest grounded shortfall below stays for non-creative requests.
+    const requirement = demand > 0 ? 'to meet that requirement' : 'to do that well';
+    let text = `I do not have enough grounded local knowledge of ${topic} ${requirement}, so I will not pad this with filler.`;
     if (pool.length) text += ` What I can say from local knowledge: ${pool.join(' ')}`;
     return applyLariComposerPlanTransforms(text, plan);
   }
@@ -17607,14 +17604,18 @@ function attachSwarmModelRuntime(globalScope) {
     // limerick, sonnet, song, story, slogan, dialogue, joke, riddle, ad,
     // speech, letter, or formless creative) attempts here with the
     // composer's grounded pool. Regression safety: a FAILED attempt falls
-    // through to the prompt's old behavior (the by-design refusal below for
-    // the poem family, the general composer for wider forms), so a miss can
-    // never change what the prompt used to get; only a successful attempt
-    // with intact structure replaces the old answer. Character-context
-    // "letters" ("lowercase letters", "the letter t") are rejected by the
-    // core's detection and keep the old behavior exactly. Impossible
-    // requests (form that must also be valid code) skip the attempt; the
-    // async chat hook refuses those honestly.
+    // Creative attempt route (drawing-board rebuild 2026-09-21; fiction mode
+    // added 2026-09-23 per Greg: no creative refusals). When there is no
+    // other base, attempt the detected creative form: grounded researched
+    // sentences first, then deterministic fiction when the grounded attempt
+    // fails or the pool is thin. A miss can never change what the prompt
+    // used to get; only a successful attempt with intact structure replaces
+    // the old answer. Character-context "letters" ("lowercase letters",
+    // "the letter t") are rejected by the core's detection and keep the old
+    // behavior exactly. Creative+code "impossible" combos are attempted as
+    // fiction: the invention is genuine, the unsatisfiable code demand is
+    // dropped rather than refused, and the result is never presented as
+    // executable code.
     // Successful attempts get the same mechanical plan transforms the
     // shortfall path uses (keywords, case, title, exact end, ...); without
     // them genuine attempts lose to refusal tricks. If the transforms break
@@ -17622,14 +17623,19 @@ function attachSwarmModelRuntime(globalScope) {
     // than shipping a structurally invalid attempt.
     const ccMod = creativeCoreModule();
     const ccDetected = ccMod ? ccMod.detectCreativeForm(prompt) : null;
-    if (!base && ccMod && ccDetected && !ccDetected.impossible) {
+    if (!base && ccMod && ccDetected) {
       let creativeAttempt = null;
+      const ccSentences = gatherLariComposerContentPool(prompt, plan, fallbackBody);
       try {
-        creativeAttempt = creativeCoreModule().attemptCreative({
-          prompt,
-          sentences: gatherLariComposerContentPool(prompt, plan, fallbackBody)
-        });
+        creativeAttempt = ccMod.attemptCreative({ prompt, sentences: ccSentences });
       } catch (_) { creativeAttempt = null; }
+      // Fiction fallback: no creative refusals. Force the fiction pool (the
+      // grounded pool already failed or was thin).
+      if (!creativeAttempt || creativeAttempt.impossible || !creativeAttempt.text) {
+        try {
+          creativeAttempt = ccMod.attemptCreative({ prompt, sentences: [], fiction: true, forceFiction: true });
+        } catch (_) { creativeAttempt = null; }
+      }
       if (creativeAttempt && !creativeAttempt.impossible && creativeAttempt.text) {
         // Apply the same mechanical plan transforms the shortfall path uses
         // (keywords, case, title, exact end, prompt repetition, ...). The old
@@ -17668,14 +17674,13 @@ function attachSwarmModelRuntime(globalScope) {
           (t.usedSentences && ccMod.countSentences(transformed) !== t.usedSentences);
         if (!broken) return transformed;
       }
-      // Attempt failed or was unusable: fall through to the prompt's old
-      // behavior. The poem-family refusal gate below preserves the narrow
-      // baseline exactly; wider forms continue into the general composer.
+      // Attempt failed or was unusable (should not happen: the fiction pool
+      // always generates): fall through to the general composer below.
       // A failed attempt never changes what the prompt used to get.
     }
-    if (!base && /\b(poems?|limericks?|sonnets?|songs?(\s+lyrics)?|jokes?|funny|letters?)\b/i.test(prompt)) {
-      return shapeLariComposerShortfall(prompt, plan, [], 0, 'creative');
-    }
+    // Creative attempts above either returned or fell through. There is no
+    // creative refusal gate anymore (Greg directive 2026-09-23): wider forms
+    // continue into the general composer below.
     const composerPool = gatherLariComposerContentPool(prompt, plan, fallbackBody);
     const composerDemand = lariComposerSentenceDemand(plan);
     const composerWordDemand = Math.max(plan.exactWords || 0, plan.minWords || 0);
@@ -31341,22 +31346,21 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
         }
       }
     } catch (_) { /* misroute guard is best-effort */ }
-    // Creative attempt route (drawing-board rebuild 2026-09-21): when the
-    // first pass shortfalls or refuses a creative request, attempt it with
-    // grounded researched sentences instead of leaving the shortfall. Runs
-    // before the uncertainty-research branch so a successful attempt skips
-    // redundant research; on a miss the normal research-retry flow owns it
-    // (research persists, the retry re-enters here with a fuller pool).
-    // Impossible creative requests get an honest refusal, not a misroute.
+    // Creative attempt route (drawing-board rebuild 2026-09-21; fiction mode
+    // added 2026-09-23 per Greg: no creative refusals): when the first pass
+    // shortfalls or refuses a creative request, attempt it with grounded
+    // researched sentences instead of leaving the shortfall, falling back to
+    // deterministic fiction when grounded content is thin. Runs before the
+    // uncertainty-research branch so a successful attempt skips redundant
+    // research; on a miss the normal research-retry flow owns it (research
+    // persists, the retry re-enters here with a fuller pool). Creative+code
+    // "impossible" combos are attempted as fiction, never refused.
     try {
       const ccMod = creativeCoreModule();
       const ccText = String((message && (message.prompt || message.message)) || message || '');
       if (ccMod && ccMod.isCreativeRequest(ccText)) {
         const ccForm = ccMod.detectCreativeForm(ccText);
-        if (ccForm && ccForm.impossible) {
-          const refusal = `I cannot do that one: a ${ccForm.form} that is also valid code cannot satisfy both demands at once.`;
-          response = Object.assign({}, response, { answer: refusal, message: refusal, passed: true, confidence: 0.9, intent: 'chat' });
-        } else {
+        {
           const respText = String((response && (response.answer || response.message)) || '');
           // Fire on an actual shortfall/refusal (matched by text, even when the
           // first pass marked it passed=true) or an empty answer, never on a
@@ -31385,7 +31389,17 @@ ${audioSrc ? `<audio controls loop src="${audioSrc}"></audio>` : ''}
                 ? ccMod.extractCreativeTopic(ccText, ccForm.form) : '';
               ccPool = gatherLariComposerContentPool(ccText, { topicPhrase: ccTopic }, '');
             } catch (_) { ccPool = []; }
-            const attempt = ccMod.attemptCreative({ prompt: ccText, sentences: ccPool });
+            const attempt = (() => {
+              let a = null;
+              try { a = ccMod.attemptCreative({ prompt: ccText, sentences: ccPool }); } catch (_) { a = null; }
+              // Fiction fallback (Greg directive 2026-09-23: no creative
+              // refusals, including creative+code "impossible" combos — the
+              // creative form is attempted genuinely, never refused).
+              if (!a || a.impossible || !a.text) {
+                try { a = ccMod.attemptCreative({ prompt: ccText, sentences: [], fiction: true, forceFiction: true }); } catch (_) { a = null; }
+              }
+              return a;
+            })();
             if (attempt && !attempt.impossible && attempt.text) {
               // Apply the instruction-constraint transforms (keywords, title,
               // echo, case) so the async attempt satisfies the same mechanical

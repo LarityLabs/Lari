@@ -583,6 +583,13 @@ async function generateChatReply(message, ctx = {}) {
         const attempt = creativeCore.attemptCreative({ prompt: text, sentences });
         if (attempt && !attempt.impossible && attempt.text) {
           candidates.push({ strategy: 'creative', text: attempt.text, verified: true });
+        } else {
+          // Fiction fallback (Greg directive 2026-09-23: no creative
+          // refusals): deterministic invention when grounded content is thin.
+          try {
+            const fic = creativeCore.attemptCreative({ prompt: text, sentences: [], fiction: true, forceFiction: true });
+            if (fic && fic.text) candidates.push({ strategy: 'creative-fiction', text: fic.text, verified: true });
+          } catch (_) { /* optional */ }
         }
       } catch (_) { /* creative candidate optional; never breaks v2 */ }
     }
