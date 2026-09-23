@@ -41,20 +41,26 @@ No external model calls, no new pretrained models, sandboxing unchanged
   template-match question -> generate Python computation -> sandbox ->
   exact numeric comparison (tol 1e-6). 14 templates.
 
-**Runtime wiring (thin)**
-- `swarm_gym_chat.js`: the TEXT side of the outer loop. Parses chat
-  messages (`/gym list|demo|train|policies|propose` plus conservative
-  natural phrasing), proposes env + policy family from text, and calls the
-  numeric loop (`inducePolicy`, `derivePolicyDP`, `demoPolicy`).
-  `handleGymMessage(model, text)` returns `{handled, reply}`; non-gym
-  messages return `{handled:false}` untouched.
-- `lari-telegram/bridge.js`: 8-line guarded hook in `chatWithLari` — only
-  `/gym`-prefixed messages route to the gym chat module; any error falls
-  through to normal chat. Demo policy resolution: best retained policy,
-  else DP when the env exposes transitions, else a quick 3-generation
-  induction. Verified live: `/gym list`, `/gym propose`, `/gym policies`,
-  `/gym demo cartpole` (retained policy, 5 episodes, mean 500, step trace),
-  `/gym demo frozen lake` (DP fallback, mean 1 over 5 episodes).
+**Scripts-first usage (dev tooling, not chat)**
+
+The gym is standalone dev tooling. It is deliberately NOT wired into
+chat — there are no `/gym` commands; chat never routes to the gym.
+Run everything from the shell:
+
+- List envs: `node swarm_gym.js --list`
+- Demo a policy: `node swarm_gym.js --demo cartpole-v1` (best retained
+  policy, else DP when the env exposes transitions, else a quick
+  3-generation induction; prints episodes + step trace)
+- Induce/train: `node swarm_gym.js --train cartpole-v1 [--family linear|table --dp]`
+- Code gym: `node swarm_code_tasks.js [--all]`
+- Math gym: `node swarm_math_tasks.js [--all]`
+- Bridge directly: `LARI_GYM_PYTHON=~/workspace/venvs/lari-gym/bin/python python3 gym_bridge.py --serve`
+
+The former `swarm_gym_chat.js` text-side router and the `/gym` hook in
+`lari-telegram/bridge.js` were removed (2026-09-23) per Greg's call:
+gym is development tooling, not a chat feature. The numeric loop
+(`swarm_gym.js`) and all runners are unchanged and fully usable from
+the shell.
 
 ## Measured numbers
 
@@ -134,9 +140,9 @@ its family.
 - Code/math gyms measure template/pattern coverage as much as learning;
   they are practice domains with automatic verifiers, not evidence of
   generalization.
-- The `/gym` chat hook is Telegram-bridge only and text-matches
-  conservatively; the browser runtime (index.html) cannot spawn the
-  bridge, so gym commands only work where Node can reach the venv.
+- Gym commands are shell-only dev tooling (no chat surface); the browser
+  runtime (index.html) cannot spawn the bridge, so the gym only runs where
+  Node can reach the venv.
 - Verified against scratch model state only; no live model files were
   touched. Nothing pushed.
 
@@ -148,7 +154,7 @@ its family.
 - `swarm_code_self_teach.js` — 16 `py-fn-*` function-defining patterns
 - `swarm_code_tasks.js` — NEW: MBPP-local runner
 - `swarm_math_tasks.js` — NEW: math gym runner
-- `swarm_gym_chat.js` — NEW: text-side router + demo/train commands
 - `gym_data/mbpp_local.jsonl`, `gym_data/math_local.jsonl` — NEW
-- `lari-telegram/bridge.js` — guarded `/gym` hook in chatWithLari
+- `swarm_gym_chat.js` — REMOVED (2026-09-23): gym is dev tooling, not chat;
+  `swarm_gym.js` CLI covers list/demo/train; `lari-telegram/bridge.js` hook removed
 - `docs/gym-expansion.md` — this note
