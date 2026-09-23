@@ -23,6 +23,12 @@ Commands:
         "rewards": [...], "episodes": N}
   (runs the whole evaluation in-process: fast, no per-step IPC.)
 
+  {"cmd": "transitions", "env": "FrozenLake-v1"}
+    -> {"ok": true, "states": 16, "actions": 4,
+        "P": {"0": {"0": [[prob, next_state, reward, done], ...], ...}, ...}}
+  (exposes env.unwrapped.P for discrete envs so the Node side can do
+  dynamic programming instead of hill-climbing.)
+
 Policy code contract:
   - Must define `act(obs)`. `obs` is ALWAYS a list of numbers; discrete
     observation spaces arrive as a single-element list, e.g. FrozenLake
@@ -173,11 +179,93 @@ def _cmd_evaluate(req):
             "rewards": rewards, "episodes": n}
 
 
+def _cmd_demo(req):
+    """Run a short demo: full step trace of the first episode plus summary
+    stats over `episodes` episodes, all in-process like evaluate.
+    Used by the /gym demo chat command for a human-readable trace."""
+    env_id = req.get("env")
+    if env_id not in ENV_REGISTRY:
+        return {"ok": False, "error": "unknown env: %r" % (env_id,)}
+    try:
+        act = _load_policy(req.get("policy", ""))
+    except Exception as exc:
+        return {"ok": False, "error": "bad policy: %s" % exc}
+    episodes = max(1, min(50, int(req.get("episodes", 5))))
+    max_steps = int(req.get("max_steps", ENV_REGISTRY[env_id]["max_steps"]))
+    base_seed = int(req.get("seed", 0))
+    trace_cap = max(1, min(200, int(req.get("trace_steps", 60))))
+    env = gym.make(env_id)
+    rewards = []
+    trace = []
+    try:
+        n_actions = int(env.action_space.n)
+        for ep in range(episodes):
+            obs, _info = env.reset(seed=base_seed + ep)
+            total = 0.0
+            for step_i in range(max_steps):
+                try:
+                    action = int(act(_to_list(obs)))
+                except Exception:
+                    action = 0
+                action = max(0, min(n_actions - 1, action))
+                out = env.step(action)
+                if len(out) == 5:
+                    obs, reward, terminated, truncated, _info = out
+                    done = bool(terminated or truncated)
+                else:  # pragma: no cover
+                    obs, reward, done, _info = out
+                total += float(reward)
+                if ep == 0 and len(trace) < trace_cap:
+                    trace.append([_to_list(obs), action, float(reward)])
+                if done:
+                    break
+            rewards.append(total)
+    finally:
+        env.close()
+    n = len(rewards)
+    mean = sum(rewards) / n
+    var = sum((r - mean) ** 2 for r in rewards) / n
+    return {"ok": True, "env": env_id, "episodes": n,
+            "mean": mean, "std": math.sqrt(var),
+            "rewards": rewards, "trace": trace,
+            "trace_truncated": len(trace) >= trace_cap}
+
+
+def _cmd_transitions(req):
+    """Expose the env's transition model P (discrete envs only).
+    Returns {ok, states, actions, P: {s: {a: [[prob, ns, reward, done], ...]}}}.
+    This is what lets Lari plan (dynamic programming) instead of only
+    hill-climbing on FrozenLake-class envs."""
+    env_id = req.get("env")
+    if env_id not in ENV_REGISTRY:
+        return {"ok": False, "error": "unknown env: %r" % (env_id,)}
+    env = gym.make(env_id)
+    try:
+        P = getattr(env.unwrapped, "P", None)
+        if P is None:
+            return {"ok": False, "error": "env has no discrete transition model P"}
+        out = {}
+        for s, adict in P.items():
+            out[str(s)] = {}
+            for a, transitions in adict.items():
+                out[str(s)][str(a)] = [
+                    [float(prob), int(ns), float(rw), bool(done)]
+                    for (prob, ns, rw, done) in transitions
+                ]
+        return {"ok": True, "states": len(out),
+                "actions": int(env.action_space.n),
+                "P": out}
+    finally:
+        env.close()
+
+
 _HANDLERS = {
     "envs": _cmd_envs,
     "reset": _cmd_reset,
     "step": _cmd_step,
     "evaluate": _cmd_evaluate,
+    "demo": _cmd_demo,
+    "transitions": _cmd_transitions,
 }
 
 

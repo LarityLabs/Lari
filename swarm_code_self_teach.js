@@ -378,6 +378,107 @@ const CODE_PATTERNS = [
       return `print(max(${list}))`;
     }
   },
+  // Function-defining patterns for MBPP-style tasks:
+  // "write a function solve(...) that ..." -> `def solve(...): ...`
+  // These extend the stdout-printing patterns above with return-value
+  // versions, so the same generate->sandbox->verify loop handles function
+  // tasks with hidden tests.
+  {
+    id: 'py-fn-fibonacci',
+    language: 'python',
+    match: /function solve\(n\).*fibonacci/i,
+    build: () => 'def solve(n):\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a'
+  },
+  {
+    id: 'py-fn-factorial',
+    language: 'python',
+    match: /function solve\(n\).*factorial/i,
+    build: () => 'def solve(n):\n    result = 1\n    for i in range(1, n + 1):\n        result *= i\n    return result'
+  },
+  {
+    id: 'py-fn-palindrome',
+    language: 'python',
+    match: /function solve\(s\).*palindrome/i,
+    build: () => 'def solve(s):\n    return s == s[::-1]'
+  },
+  {
+    id: 'py-fn-prime',
+    language: 'python',
+    match: /function solve\(n\).*prime/i,
+    build: () => 'def solve(n):\n    if n < 2:\n        return False\n    for i in range(2, int(n ** 0.5) + 1):\n        if n % i == 0:\n            return False\n    return True'
+  },
+  {
+    id: 'py-fn-reverse',
+    language: 'python',
+    match: /function solve\(s\).*reverse/i,
+    build: () => 'def solve(s):\n    return s[::-1]'
+  },
+  {
+    id: 'py-fn-sum-list',
+    language: 'python',
+    match: /function solve\(lst\).*sum of/i,
+    build: () => 'def solve(lst):\n    return sum(lst)'
+  },
+  {
+    id: 'py-fn-max-list',
+    language: 'python',
+    match: /function solve\(lst\).*(?<!second )(largest|maximum)/i,
+    build: () => 'def solve(lst):\n    return max(lst)'
+  },
+  {
+    id: 'py-fn-sort',
+    language: 'python',
+    match: /function solve\(lst\).*sort/i,
+    build: () => 'def solve(lst):\n    return sorted(lst)'
+  },
+  {
+    id: 'py-fn-vowels',
+    language: 'python',
+    match: /function solve\(s\).*vowels/i,
+    build: () => 'def solve(s):\n    return sum(1 for c in s.lower() if c in "aeiou")'
+  },
+  {
+    id: 'py-fn-gcd',
+    language: 'python',
+    match: /function solve\(a, b\).*(greatest common divisor|gcd)/i,
+    build: () => 'def solve(a, b):\n    while b:\n        a, b = b, a % b\n    return a'
+  },
+  {
+    id: 'py-fn-add',
+    language: 'python',
+    match: /function solve\(a, b\).*sum of a and b/i,
+    build: () => 'def solve(a, b):\n    return a + b'
+  },
+  {
+    id: 'py-fn-count-even',
+    language: 'python',
+    match: /function solve\(lst\).*even/i,
+    build: () => 'def solve(lst):\n    return sum(1 for x in lst if x % 2 == 0)'
+  },
+  {
+    id: 'py-fn-square',
+    language: 'python',
+    match: /function solve\(n\).*square of/i,
+    build: () => 'def solve(n):\n    return n * n'
+  },
+  {
+    id: 'py-fn-length',
+    language: 'python',
+    match: /function solve\(s\).*length of/i,
+    build: () => 'def solve(s):\n    return len(s)'
+  },
+  {
+    id: 'py-fn-is-even',
+    language: 'python',
+    match: /function solve\(n\).*even number/i,
+    build: () => 'def solve(n):\n    return n % 2 == 0'
+  },
+  {
+    id: 'py-fn-abs-diff',
+    language: 'python',
+    match: /function solve\(a, b\).*absolute difference/i,
+    build: () => 'def solve(a, b):\n    return abs(a - b)'
+  },
   {
     id: 'js-fib-loop',
     language: 'javascript',

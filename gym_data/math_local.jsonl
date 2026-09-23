@@ -1,0 +1,24 @@
+{"id": "math-arith-1", "question": "What is 17 * 23?", "answer": 391}
+{"id": "math-arith-2", "question": "What is 144 / 12 + 7?", "answer": 19}
+{"id": "math-arith-3", "question": "What is 2 to the power of 10?", "answer": 1024}
+{"id": "math-arith-4", "question": "What is 1000 - 367?", "answer": 633}
+{"id": "math-linear-1", "question": "Solve for x: 3x + 7 = 22", "answer": 5}
+{"id": "math-linear-2", "question": "Solve for x: 5x - 11 = 34", "answer": 9}
+{"id": "math-linear-3", "question": "Solve for x: 2x = 50", "answer": 25}
+{"id": "math-percent-1", "question": "What is 15 percent of 200?", "answer": 30}
+{"id": "math-percent-2", "question": "What is 8 percent of 1250?", "answer": 100}
+{"id": "math-sqrt-1", "question": "What is the square root of 144?", "answer": 12}
+{"id": "math-sqrt-2", "question": "What is the square root of 2 rounded to 3 decimal places?", "answer": 1.414}
+{"id": "math-gcd-1", "question": "What is the greatest common divisor of 48 and 180?", "answer": 12}
+{"id": "math-lcm-1", "question": "What is the least common multiple of 6 and 8?", "answer": 24}
+{"id": "math-mean-1", "question": "What is the mean of the numbers 3, 5, 7, 9?", "answer": 6}
+{"id": "math-factorial-1", "question": "What is the factorial of 7?", "answer": 5040}
+{"id": "math-decimal-1", "question": "What is 5 divided by 8 as a decimal?", "answer": 0.625}
+{"id": "math-hypot-1", "question": "A right triangle has legs 3 and 4. What is the length of the hypotenuse?", "answer": 5}
+{"id": "math-hypot-2", "question": "A right triangle has legs 5 and 12. What is the length of the hypotenuse?", "answer": 13}
+{"id": "math-word-1", "question": "A train travels 60 miles per hour for 2.5 hours. How many miles does it travel?", "answer": 150}
+{"id": "math-word-2", "question": "A shirt costs 40 dollars after a 20 percent discount. What was the original price in dollars?", "answer": 50}
+{"id": "math-word-3", "question": "If 3 workers build 12 widgets per hour, how many widgets do 5 workers build in 2 hours?", "answer": 40}
+{"id": "math-sum-primes", "question": "What is the sum of the first 10 prime numbers?", "answer": 129}
+{"id": "math-system-1", "question": "Solve the system: x + y = 10 and x - y = 4. What is x?", "answer": 7}
+{"id": "math-quadratic-1", "question": "What is the positive root of the equation x squared minus 5x plus 6 equals 0?", "answer": 3}

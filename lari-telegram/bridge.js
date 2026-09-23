@@ -199,6 +199,20 @@ function createBridge(deps) {
       telegramUserId: entry.home.userId,
       sharedContext: sharedContext.slice(-20)
     };
+    // Gym outer loop (thin integration): /gym commands and explicit gym
+    // phrasing route to swarm_gym_chat.js — the TEXT side proposes the
+    // env/policy family, the numeric loop (swarm_gym.js) executes.
+    // Guarded: on any error we fall through to normal chat.
+    if (/^\/gym\b/i.test(String(messageText || '').trim())) {
+      try {
+        const gymChat = require('../swarm_gym_chat.js');
+        const routed = await gymChat.handleGymMessage(entry.model, messageText, { retain: true });
+        if (routed && routed.handled) {
+          saveUserLari(entry.home.userId); // persist any retained policy
+          return routed.reply;
+        }
+      } catch (_) { /* fall through to normal chat */ }
+    }
     const response = await runtime.sendMessageToLariAsync(entry.model, messageText, context);
     saveUserLari(entry.home.userId); // persist whatever the turn learned
     // Transport-level turn log: feeds the discourse miner's audit trail and

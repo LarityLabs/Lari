@@ -189,6 +189,7 @@ const POLICY_SPACES = {
     evalEpisodes: 100,
     freshEvalEpisodes: 200,
     solvedAt: 0.7,
+    tableSize: 16,
     seedParams: null, // built in seeds()
     seeds(rnd) {
       const mk = (fn) => ({ table: Array.from({ length: 16 }, (_, s) => fn(s)), def: 0 });
@@ -209,29 +210,105 @@ const POLICY_SPACES = {
     }
   },
   // Blackjack-v1 obs: [player_sum, dealer_card, usable_ace].
-  // Stand threshold, split by usable ace.
+  // Two policy families:
+  //   threshold — stand threshold, split by usable ace (old, coarse).
+  //   table     — full state->action table over
+  //               (player_sum 4..21) x (dealer 1..10) x (usable_ace 0/1).
   'Blackjack-v1': {
-    evalEpisodes: 300,
-    freshEvalEpisodes: 1000,
-    solvedAt: -0.02,
-    seedParams: [[20, 19], [19, 18], [17, 17], [21, 20], [18, 18]],
-    toCode([tNoAce, tAce]) {
-      const a = Math.round(tNoAce), b = Math.round(tAce);
-      return `def act(obs):\n    s = int(obs[0])\n    t = ${b} if int(obs[2]) else ${a}\n    return 0 if s >= t else 1\n`;
-    },
-    mutate(p, rnd) {
-      const q = p.slice();
-      const i = Math.floor(rnd() * 2);
-      q[i] = Math.max(12, Math.min(21, Math.round(q[i] + (rnd() < 0.5 ? -1 : 1))));
-      return q;
+    defaultFamily: 'threshold',
+    families: {
+      threshold: {
+        evalEpisodes: 300,
+        freshEvalEpisodes: 1000,
+        solvedAt: -0.02,
+        seedParams: [[20, 19], [19, 18], [17, 17], [21, 20], [18, 18]],
+        toCode([tNoAce, tAce]) {
+          const a = Math.round(tNoAce), b = Math.round(tAce);
+          return `def act(obs):\n    s = int(obs[0])\n    t = ${b} if int(obs[2]) else ${a}\n    return 0 if s >= t else 1\n`;
+        },
+        mutate(p, rnd) {
+          const q = p.slice();
+          const i = Math.floor(rnd() * 2);
+          q[i] = Math.max(12, Math.min(21, Math.round(q[i] + (rnd() < 0.5 ? -1 : 1))));
+          return q;
+        }
+      },
+      // Full tabular family. 360 cells: ((sum-4)*10 + (dealer-1))*2 + ace.
+      table: {
+        evalEpisodes: 500,
+        freshEvalEpisodes: 1000,
+        // Never early-stop: basic-strategy-level seeds can score above a
+        // modest bar on a lucky train seed while still being far from
+        // converged. Let the climb run all generations.
+        solvedAt: 0.1,
+        seeds(rnd) {
+          // Basic-strategy seed: hard/soft total rules everyone agrees on.
+          const basic = (s, d, ace) => {
+            const strong = d >= 9 || d === 1; // dealer 9,10,A
+            if (ace) {
+              if (s <= 17) return 1;
+              if (s === 18) return strong ? 1 : 0;
+              return 0;
+            }
+            if (s <= 11) return 1;
+            if (s === 12) return (d === 2 || d === 3 || strong) ? 1 : 0;
+            if (s <= 16) return strong ? 1 : 0;
+            return 0;
+          };
+          const mk = (fn) => {
+            const t = [];
+            for (let s = 4; s <= 21; s++)
+              for (let d = 1; d <= 10; d++)
+                for (let a = 0; a <= 1; a++) t.push(fn(s, d, a));
+            return t;
+          };
+          const out = [mk(basic), mk(() => 0), mk(() => 1)];
+          for (let k = 0; k < 5; k++) out.push(mk(() => (rnd() < 0.5 ? 0 : 1)));
+          // basic-strategy with a few random edits, to seed the climb
+          const pert = mk(basic);
+          for (let k = 0; k < 24; k++) pert[Math.floor(rnd() * 360)] = rnd() < 0.5 ? 0 : 1;
+          out.push(pert);
+          return out;
+        },
+        toCode(table) {
+          const cells = table.map((a) => (a ? '1' : '0')).join('');
+          return 'def act(obs):\n' +
+            '    _T = "' + cells + '"\n' +
+            '    s = int(obs[0])\n' +
+            '    d = int(obs[1])\n' +
+            '    a = int(obs[2])\n' +
+            '    s = 4 if s < 4 else (21 if s > 21 else s)\n' +
+            '    d = 1 if d < 1 else (10 if d > 10 else d)\n' +
+            '    i = ((s - 4) * 10 + (d - 1)) * 2 + (1 if a else 0)\n' +
+            '    return int(_T[i])\n';
+        },
+        mutate(p, rnd) {
+          const q = p.slice();
+          const n = 1 + Math.floor(rnd() * 6);
+          for (let k = 0; k < n; k++) q[Math.floor(rnd() * 360)] = q[Math.floor(rnd() * 360)] ? 0 : 1;
+          return q;
+        }
+      }
     }
   }
 };
 
-function spaceSeeds(envId, rnd) {
+function pickFamily(envId, familyName) {
   const space = POLICY_SPACES[envId];
   if (!space) throw new Error('no policy space for env: ' + envId);
+  if (space.families) {
+    const name = familyName || space.defaultFamily || Object.keys(space.families)[0];
+    const fam = space.families[name];
+    if (!fam) throw new Error('unknown family ' + name + ' for env ' + envId);
+    return Object.assign({}, fam, { family: name, env: envId });
+  }
+  return Object.assign({}, space, { family: 'default', env: envId });
+}
+
+function spaceSeeds(envId, rnd, fam) {
+  const space = fam || pickFamily(envId);
   if (space.seeds) return space.seeds(rnd);
+  if (!space.seedParams) throw new Error('no seeds for env: ' + envId);
   return space.seedParams.map((p) => (Array.isArray(p) ? p.slice() : JSON.parse(JSON.stringify(p))));
 }
 
@@ -244,8 +321,7 @@ function paramsKey(p) {
 // ---------------------------------------------------------------------------
 
 function inducePolicy(envId, opts = {}) {
-  const space = POLICY_SPACES[envId];
-  if (!space) throw new Error('no policy space for env: ' + envId);
+  const fam = pickFamily(envId, opts.family);
   const generations = opts.generations || 10;
   const popSize = opts.popSize || 8;
   const seed = opts.seed === undefined ? 1 : opts.seed;
@@ -254,9 +330,9 @@ function inducePolicy(envId, opts = {}) {
   const cache = new Map();
 
   function scoreOf(params, episodes) {
-    const key = envId + '|' + paramsKey(params) + '|' + episodes;
+    const key = envId + '|' + fam.family + '|' + paramsKey(params) + '|' + episodes;
     if (cache.has(key)) return cache.get(key);
-    const code = space.toCode(params);
+    const code = fam.toCode(params);
     const res = evaluatePolicy(envId, code, { episodes, seed: trainSeed });
     const s = res && res.ok
       ? { ok: true, mean: res.mean, std: res.std, code }
@@ -265,7 +341,7 @@ function inducePolicy(envId, opts = {}) {
     return s;
   }
 
-  let population = spaceSeeds(envId, rnd);
+  let population = spaceSeeds(envId, rnd, fam);
   let best = null; // {params, mean, std, code}
   let evals = 0;
   const history = [];
@@ -273,17 +349,17 @@ function inducePolicy(envId, opts = {}) {
   for (let gen = 0; gen < generations; gen++) {
     let genBest = null;
     for (const params of population) {
-      const s = scoreOf(params, space.evalEpisodes);
+      const s = scoreOf(params, fam.evalEpisodes);
       evals++;
       if (!s.ok) continue;
       if (!genBest || s.mean > genBest.mean) genBest = { params, mean: s.mean, std: s.std, code: s.code };
     }
     if (genBest && (!best || genBest.mean > best.mean)) best = genBest;
     history.push({ gen, bestMean: best ? best.mean : null, evals });
-    if (best && best.mean >= space.solvedAt) break; // solved: stop early
+    if (best && best.mean >= fam.solvedAt) break; // solved: stop early
     if (!best) break;
     const next = [best.params];
-    while (next.length < popSize) next.push(space.mutate(best.params, rnd));
+    while (next.length < popSize) next.push(fam.mutate(best.params, rnd));
     population = next;
   }
 
@@ -292,13 +368,14 @@ function inducePolicy(envId, opts = {}) {
   // Fresh final evaluation on unseen seeds: the honest number.
   const freshSeed = (opts.freshSeed === undefined ? 777000 : opts.freshSeed);
   const fresh = evaluatePolicy(envId, best.code, {
-    episodes: space.freshEvalEpisodes, seed: freshSeed, timeoutMs: 300000
+    episodes: fam.freshEvalEpisodes, seed: freshSeed, timeoutMs: 300000
   });
   if (!fresh.ok) throw new Error('fresh evaluation failed: ' + fresh.error);
 
   return {
-    policyId: 'gym-' + envId.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-s' + seed,
+    policyId: 'gym-' + envId.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + fam.family + '-s' + seed,
     env: envId,
+    family: fam.family,
     language: 'python',
     code: best.code,
     params: best.params,
@@ -326,6 +403,124 @@ function ensureGymPolicies(model) {
   const cg = model.lariCodeGeneration;
   if (!Array.isArray(cg.gymPolicies)) cg.gymPolicies = [];
   return cg;
+}
+
+function getTransitions(envId) {
+  return bridgeOnce({ cmd: 'transitions', env: envId }, 60000);
+}
+
+/**
+ * Derive a policy by dynamic programming instead of hill-climbing.
+ * Asks the bridge for the env's transition model P (env.unwrapped.P),
+ * runs value iteration in the Node driver, then renders the greedy
+ * optimal policy through the env's tabular toCode — the same code
+ * format the hill-climb produces, so scores are apples-to-apples.
+ *
+ * This is the "planning, not trial and error" answer for FrozenLake-class
+ * envs that the build note called for. It is still learned policy CODE
+ * verified by environment reward; it just uses the model instead of
+ * sampling it.
+ */
+function derivePolicyDP(envId, opts = {}) {
+  const fam = pickFamily(envId, opts.family);
+  if (typeof fam.toCode !== 'function') {
+    throw new Error('DP derivation needs a tabular family for ' + envId);
+  }
+  const res = getTransitions(envId);
+  if (!res || !res.ok) throw new Error('transitions failed: ' + ((res && res.error) || 'no response'));
+  const P = res.P; // {s: {a: [[prob, ns, reward, done], ...]}}
+  const gamma = opts.gamma === undefined ? 0.99 : opts.gamma;
+  const states = Object.keys(P).map(Number).sort((a, b) => a - b);
+  const actions = Object.keys(P[String(states[0])] || {}).map(Number).sort((a, b) => a - b);
+
+  // Value iteration.
+  const V = {};
+  for (const s of states) V[s] = 0;
+  for (let it = 0; it < 10000; it++) {
+    let delta = 0;
+    for (const s of states) {
+      let best = -Infinity;
+      for (const a of actions) {
+        const trans = (P[String(s)] || {})[String(a)] || [];
+        let q = 0;
+        for (const t of trans) {
+          const [prob, ns, reward, done] = t;
+          q += prob * (reward + (done ? 0 : gamma * V[ns]));
+        }
+        if (q > best) best = q;
+      }
+      delta = Math.max(delta, Math.abs(V[s] - best));
+      V[s] = best;
+    }
+    if (delta < 1e-9) break;
+  }
+
+  // Greedy policy, rendered as the same tabular act() code.
+  const table = new Array(fam.tableSize || 16).fill(0);
+  for (const s of states) {
+    let bestA = actions[0], bestQ = -Infinity;
+    for (const a of actions) {
+      const trans = (P[String(s)] || {})[String(a)] || [];
+      let q = 0;
+      for (const t of trans) {
+        const [prob, ns, reward, done] = t;
+        q += prob * (reward + (done ? 0 : gamma * V[ns]));
+      }
+      if (q > bestQ) { bestQ = q; bestA = a; }
+    }
+    table[s] = bestA;
+  }
+  const code = fam.toCode({ table, def: 0 });
+
+  const freshEpisodes = opts.freshEpisodes || 1000;
+  const freshSeed = opts.freshSeed === undefined ? 777000 : opts.freshSeed;
+  const fresh = evaluatePolicy(envId, code, {
+    episodes: freshEpisodes, seed: freshSeed, timeoutMs: 300000
+  });
+  if (!fresh.ok) throw new Error('fresh evaluation failed: ' + fresh.error);
+
+  return {
+    policyId: 'gym-' + envId.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-dp',
+    env: envId,
+    family: 'dp(' + fam.family + ')',
+    language: 'python',
+    code,
+    params: { states: states.length, actions: actions.length, gamma },
+    meanReward: fresh.mean,
+    stdReward: fresh.std,
+    minReward: fresh.min,
+    maxReward: fresh.max,
+    evalEpisodes: fresh.episodes,
+    evalSeed: freshSeed,
+    generations: 0,
+    totalEvals: 1,
+    source: 'gym-dp',
+    learnedAt: new Date().toISOString()
+  };
+}
+
+/**
+ * Run a short demo episode batch through a live GymSession: the session
+ * child executes the policy's step trace in its sandbox and reports
+ * scores plus the first episode's obs->action->reward trace.
+ * Returns a promise resolving to the bridge's demo response.
+ */
+async function demoPolicy(envId, policyCode, opts = {}) {
+  const session = new GymSession(envId, opts.seed === undefined ? 0 : opts.seed);
+  session.start();
+  try {
+    const res = await session.send({
+      cmd: 'demo',
+      env: envId,
+      policy: policyCode,
+      episodes: opts.episodes || 5,
+      seed: opts.seed === undefined ? 0 : opts.seed,
+      trace_steps: opts.traceSteps || 60
+    });
+    return res;
+  } finally {
+    session.close();
+  }
 }
 
 function getGymPolicies(model) {
@@ -376,8 +571,9 @@ function runCodeGymTask(model, taskId, opts = {}) {
 
 function printUsage() {
   console.log('usage: node swarm_gym.js [--list-envs]');
-  console.log('       node swarm_gym.js --env <EnvId> [--generations N --popsize N --seed N]');
+  console.log('       node swarm_gym.js --env <EnvId> [--family <name>] [--generations N --popsize N --seed N]');
   console.log('       node swarm_gym.js --env <EnvId> --retain <model.json>');
+  console.log('       node swarm_gym.js --dp <EnvId>   (dynamic programming via transition model)');
   console.log('       node swarm_gym.js --codegym <taskId>');
 }
 
@@ -391,6 +587,11 @@ function main() {
     console.log(JSON.stringify(listEnvs(), null, 2));
     return;
   }
+  if (args.includes('--dp')) {
+    const envId = get('--dp');
+    console.log(JSON.stringify(derivePolicyDP(envId, { family: get('--family') }), null, 2));
+    return;
+  }
   if (args.includes('--codegym')) {
     const taskId = get('--codegym');
     const model = {};
@@ -401,6 +602,7 @@ function main() {
   const envId = get('--env');
   if (!envId) { printUsage(); process.exit(2); }
   const record = inducePolicy(envId, {
+    family: get('--family'),
     generations: parseInt(get('--generations', '10'), 10),
     popSize: parseInt(get('--popsize', '8'), 10),
     seed: parseInt(get('--seed', '1'), 10)
@@ -421,9 +623,13 @@ module.exports = {
   bridgeOnce,
   listEnvs,
   evaluatePolicy,
+  getTransitions,
   GymSession,
   POLICY_SPACES,
+  pickFamily,
   inducePolicy,
+  derivePolicyDP,
+  demoPolicy,
   getGymPolicies,
   retainGymPolicy,
   runCodeGymTask
